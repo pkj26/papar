@@ -584,10 +584,12 @@ const App: React.FC = () => {
     const selectedFont = headerConfig.fontFamily;
     const isHeaderEnabled = headerConfig.enabled;
 
-    // Aggregate solutions
+    // Aggregate solutions securely into a continuous stream, avoiding page breaks per job
     const bodyContent = completedJobs.map((job, index) => `
-    <div class="page-break-wrapper" style="break-after: page; page-break-after: always; margin-bottom: 30px;">
-        ${index === 0 ? headerHtml : ''}
+    <div class="solution-section" style="margin-bottom: 30px;">
+        <div style="background: #374151; color: #fff; padding: 4px 10px; font-size: 12px; font-weight: bold; margin-bottom: 15px; display: inline-block; border-radius: 4px; text-transform: uppercase; letter-spacing: 0.5px;">
+           Source File: ${job.file.name}
+        </div>
         <div style="${isHeaderEnabled ? `font-family: ${selectedFont};` : ''}">
             ${job.solutionHtml}
         </div>
@@ -602,14 +604,26 @@ const App: React.FC = () => {
        element.style.fontFamily = selectedFont;
     }
     
-    element.innerHTML = bodyContent;
+    // Inject header and content
+    // We add specific styles for solution blocks to avoid breaking inside them
+    element.innerHTML = `
+      <style>
+        .solution-block { page-break-inside: avoid; }
+        table { width: 100%; border-collapse: collapse; }
+      </style>
+      ${headerHtml}
+      <div style="margin-top: 20px;">
+         ${bodyContent}
+      </div>
+    `;
 
     const opt = {
       margin: 10,
-      filename: 'solutions.pdf',
+      filename: 'detailed-solutions.pdf',
       image: { type: 'jpeg', quality: 0.98 },
       html2canvas: { scale: 2, useCORS: true },
-      jsPDF: { unit: 'mm', format: 'a4', orientation: 'portrait' }
+      jsPDF: { unit: 'mm', format: 'a4', orientation: 'portrait' },
+      pagebreak: { mode: ['css', 'legacy'] }
     };
 
     // @ts-ignore

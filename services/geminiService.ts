@@ -46,25 +46,26 @@ Your task is to **CREATE A NEW VERSION** of this test paper by changing the ques
 const SOLUTION_PROMPT = `
 You are an expert Professor and Tutor.
 I will provide you with HTML code containing exam questions.
-Your task is to generate a **Detailed Solution Key** for these questions.
+Your task is to generate a **Professional Solution Key** for these questions suitable for printing.
 
 **Instructions:**
 1. **Parse**: Read the questions from the provided HTML.
-2. **Format**: For EACH question found:
-   - **Question**: Copy the question text exactly as is. Display it in **Bold**.
-   - **Answer**: Immediately below the question, provide a detailed, step-by-step solution.
-   - **Style**: Use Tailwind CSS and inline styles. 
-     - Wrap the Question in a <div> with background color #f3f4f6 (gray-100) and padding.
-     - Wrap the Answer in a <div> with padding and clear typography.
-     - Use specific colors for the answer text (e.g., text-slate-800).
-     - If it is a Math problem, show calculations.
-     - If it is code, explain the logic.
-   - Add a separator <hr> between questions.
+2. **Format**: For EACH question found, create a distinct "Solution Block".
+   - **Container**: Wrap the Question-Answer pair in a <div class="solution-block" style="margin-bottom: 25px; page-break-inside: avoid; border-bottom: 1px dashed #e5e7eb; padding-bottom: 20px;">.
+   - **Question Section**: 
+     - Use a light gray background box for the question text so it stands out.
+     - Style: <div style="background-color: #f3f4f6; padding: 12px; border-radius: 6px; font-weight: bold; color: #111827; margin-bottom: 12px; font-size: 16px; border-left: 4px solid #4b5563;">Q: [Insert Question Text]</div>
+   - **Answer Section**: 
+     - Provide a clear, detailed step-by-step solution.
+     - Style: <div style="padding-left: 8px; color: #374151; line-height: 1.6; font-size: 15px;">[Insert Detailed Solution]</div>
+   - **Math**: If it is a math problem, show steps clearly using standard text representation or simple HTML.
+   - **Code**: If it asks for code, use a <pre> block with a border.
 
 **Output Rules:**
 * Return ONLY the HTML code for the solution body.
 * Do NOT return markdown.
-* The output should be print-ready.
+* Use inline styles for maximum compatibility with PDF generators.
+* Do not include the main header (Subject, Time, etc), just the list of questions and answers.
 `;
 
 /**
