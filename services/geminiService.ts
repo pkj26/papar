@@ -14,6 +14,11 @@ Your task is to convert an image of a document or web page into a PIXEL-PERFECT 
    - If there are tables, recreate them using HTML <table> with inline borders.
 3. **Content**: Extract all text accurately.
 4. **Images**: If there are sub-images, use a placeholder or ignore, focus on Text and Layout.
+5. **Watermark Removal (CRITICAL)**: 
+   - **IGNORE** any watermarks, stamps, or overlay text (e.g., "Sample", "Copyright", "Confidential", Website URLs, or diagonal text) that obscures the content.
+   - **DO NOT** transcribe the watermark text into the HTML.
+   - **DO NOT** create visual elements (like faded divs) for the watermark. 
+   - Pretend the watermark does not exist and reconstruct the text/tables underneath it cleanly.
 
 **Output Rules:**
 * Return ONLY the HTML code for the content container.
@@ -36,7 +41,7 @@ Your task is to **CREATE A NEW VERSION** of this test paper by changing the ques
 3. **Preserve Structure**:
    - **DO NOT CHANGE** the HTML structure, classes, or inline styles. The visual look must be identical.
    - **DO NOT CHANGE** static headers like "School Name", "Time Allowed", "Instructions", "Student Name", "Roll No". Only change the actual content of the questions.
-4. **Output**: Return the complete HTML with the new questions.
+4. **Clean Up**: If any watermark text accidentally remained in the source HTML, remove it in this version.
 
 **Output Rules:**
 * Return ONLY the HTML code.
@@ -49,7 +54,7 @@ I will provide you with HTML code containing exam questions.
 Your task is to generate a **Professional Solution Key** for these questions suitable for printing.
 
 **Instructions:**
-1. **Parse**: Read the questions from the provided HTML.
+1. **Parse**: Read the questions from the provided HTML. **Ignore any text that looks like a watermark or artifact.**
 2. **Format**: For EACH question found, create a distinct "Solution Block".
    - **Container**: Wrap the Question-Answer pair in a <div class="solution-block" style="margin-bottom: 25px; page-break-inside: avoid; border-bottom: 1px dashed #e5e7eb; padding-bottom: 20px;">.
    - **Question Section**: 
