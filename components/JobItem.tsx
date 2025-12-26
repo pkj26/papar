@@ -1,17 +1,18 @@
 import React from 'react';
 import { ImageJob, JobStatus } from '../types';
-import { Loader2, CheckCircle, AlertCircle, Eye, Trash2, Crop } from 'lucide-react';
+import { Loader2, CheckCircle, AlertCircle, Eye, Trash2, Crop, RefreshCw } from 'lucide-react';
 
 interface JobItemProps {
   job: ImageJob;
   onRemove: (id: string) => void;
   onPreview: (html: string) => void;
   onCrop: (id: string) => void;
+  onRetry: (id: string) => void;
 }
 
-export const JobItem: React.FC<JobItemProps> = ({ job, onRemove, onPreview, onCrop }) => {
+export const JobItem: React.FC<JobItemProps> = ({ job, onRemove, onPreview, onCrop, onRetry }) => {
   return (
-    <div className="flex items-center p-4 bg-white border border-slate-200 rounded-lg shadow-sm hover:shadow-md transition-shadow group">
+    <div className={`flex items-center p-4 bg-white border rounded-lg shadow-sm hover:shadow-md transition-all group ${job.status === JobStatus.ERROR ? 'border-red-200 bg-red-50/30' : 'border-slate-200'}`}>
       {/* Thumbnail */}
       <div className="h-20 w-20 flex-shrink-0 rounded overflow-hidden border border-slate-100 bg-slate-50 relative">
         <img 
@@ -55,11 +56,11 @@ export const JobItem: React.FC<JobItemProps> = ({ job, onRemove, onPreview, onCr
           )}
           {job.status === JobStatus.ERROR && (
             <span 
-              className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-red-100 text-red-800 cursor-help"
+              className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-red-100 text-red-800"
               title={job.error}
             >
               <AlertCircle className="w-3 h-3 mr-1" />
-              {job.error ? job.error.substring(0, 30) + (job.error.length > 30 ? '...' : '') : 'Failed'}
+              {job.error ? (job.error.includes('429') ? 'Server Busy (429)' : job.error.substring(0, 30)) : 'Failed'}
             </span>
           )}
         </div>
@@ -74,6 +75,17 @@ export const JobItem: React.FC<JobItemProps> = ({ job, onRemove, onPreview, onCr
             title="Crop Image"
           >
             <Crop className="w-5 h-5" />
+          </button>
+        )}
+
+        {job.status === JobStatus.ERROR && (
+          <button
+            onClick={() => onRetry(job.id)}
+            className="p-2 text-red-600 hover:bg-red-100 rounded-full transition-colors flex items-center gap-1 px-3 bg-red-50 border border-red-200"
+            title="Retry this file"
+          >
+            <RefreshCw className="w-4 h-4" />
+            <span className="text-xs font-bold">Retry</span>
           </button>
         )}
         

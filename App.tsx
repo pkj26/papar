@@ -1,5 +1,5 @@
 import React, { useState, useCallback, useRef, useEffect } from 'react';
-import { Upload, FileText, Printer, Download, Sparkles, AlertTriangle, ClipboardPaste, Users } from 'lucide-react';
+import { Upload, Printer, Download, Sparkles, AlertTriangle, ClipboardPaste, Users, FileText } from 'lucide-react';
 import { ImageJob, JobStatus } from './types';
 import { generateHtmlFromImage } from './services/geminiService';
 import { JobItem } from './components/JobItem';
@@ -127,10 +127,39 @@ const App: React.FC = () => {
     setCroppingJobId(null);
   };
 
+  const processJob = async (job: ImageJob) => {
+    try {
+      // Update status to PROCESSING
+      setJobs(prev => prev.map(j => j.id === job.id ? { ...j, status: JobStatus.PROCESSING, error: undefined } : j));
+      
+      const generatedHtml = await generateHtmlFromImage(job.file);
+      
+      setJobs(prev => prev.map(j => 
+        j.id === job.id 
+          ? { ...j, status: JobStatus.COMPLETED, resultHtml: generatedHtml } 
+          : j
+      ));
+    } catch (error: any) {
+      console.error(`Job ${job.id} failed:`, error);
+      setJobs(prev => prev.map(j => 
+        j.id === job.id 
+          ? { ...j, status: JobStatus.ERROR, error: error.message || 'Processing failed' } 
+          : j
+      ));
+    }
+  };
+
+  const handleRetryJob = async (id: string) => {
+    const job = jobs.find(j => j.id === id);
+    if (job) {
+      await processJob(job);
+    }
+  };
+
   const handleProcessAll = async () => {
     setIsProcessing(true);
     
-    // Filter jobs that need processing
+    // Filter jobs that need processing (IDLE or ERROR)
     const jobsToProcess = jobs.filter(j => j.status === JobStatus.IDLE || j.status === JobStatus.ERROR);
 
     if (jobsToProcess.length === 0) {
@@ -138,31 +167,19 @@ const App: React.FC = () => {
       return;
     }
 
-    // Set all filtered jobs to PROCESSING status immediately
-    const processingIds = new Set(jobsToProcess.map(j => j.id));
-    setJobs(prev => prev.map(j => processingIds.has(j.id) ? { ...j, status: JobStatus.PROCESSING, error: undefined } : j));
+    // Process sequentially (one by one) to avoid Rate Limits (429)
+    // Parallel processing with Promise.all triggers rate limits quickly on free tier
+    for (const job of jobsToProcess) {
+      // Check if job still exists (wasn't deleted while processing others)
+      const currentJob = jobs.find(j => j.id === job.id);
+      if (!currentJob) continue;
 
-    // Process all jobs in parallel using Promise.all
-    const promises = jobsToProcess.map(async (job) => {
-      try {
-        const generatedHtml = await generateHtmlFromImage(job.file);
-        
-        setJobs(prev => prev.map(j => 
-          j.id === job.id 
-            ? { ...j, status: JobStatus.COMPLETED, resultHtml: generatedHtml } 
-            : j
-        ));
-      } catch (error: any) {
-        console.error(`Job ${job.id} failed:`, error);
-        setJobs(prev => prev.map(j => 
-          j.id === job.id 
-            ? { ...j, status: JobStatus.ERROR, error: error.message || 'Processing failed' } 
-            : j
-        ));
-      }
-    });
+      await processJob(job);
+      
+      // Small delay between requests to be gentle on the API
+      await new Promise(resolve => setTimeout(resolve, 500)); 
+    }
 
-    await Promise.all(promises);
     setIsProcessing(false);
   };
 
@@ -227,6 +244,52 @@ const App: React.FC = () => {
     const a = document.createElement('a');
     a.href = url;
     a.download = 'printable-pages.html';
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  };
+
+  const handleDownloadWord = () => {
+    const completedJobs = jobs.filter(j => j.status === JobStatus.COMPLETED && j.resultHtml);
+    if (completedJobs.length === 0) return;
+
+    // MS Word requires specific XML namespaces and structure to render HTML correctly as a .doc file.
+    // NOTE: MS Word does not execute JavaScript, so the Tailwind CDN script won't run. 
+    // That is why the Gemini Prompt now requests inline styles as well.
+    const preHtml = `<html xmlns:o='urn:schemas-microsoft-com:office:office' xmlns:w='urn:schemas-microsoft-com:office:word' xmlns='http://www.w3.org/TR/REC-html40'><head><meta charset='utf-8'><title>Export HTML To Doc</title>
+    <!-- Basic Reset for Word -->
+    <style>
+      body { font-family: Arial, sans-serif; }
+      table { border-collapse: collapse; width: 100%; }
+      td, th { border: 1px solid #ddd; padding: 8px; }
+      .page-break { page-break-after: always; }
+    </style>
+    </head><body>`;
+    
+    const postHtml = "</body></html>";
+    
+    // Word specific page break
+    const wordPageBreak = "<br clear=all style='mso-special-character:line-break;page-break-before:always'>";
+
+    const innerContent = completedJobs.map((job, index) => `
+      <div class="WordSection">
+        ${job.resultHtml}
+      </div>
+      ${index < completedJobs.length - 1 ? wordPageBreak : ''}
+    `).join('');
+
+    const html = preHtml + innerContent + postHtml;
+
+    // Create a Blob with the specific MIME type for Word
+    const blob = new Blob(['\ufeff', html], {
+        type: 'application/msword'
+    });
+    
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'document.doc'; // .doc extension forces Word to open it
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
@@ -305,6 +368,7 @@ const App: React.FC = () => {
                     onRemove={handleRemoveJob} 
                     onPreview={setPreviewHtml}
                     onCrop={handleStartCrop}
+                    onRetry={handleRetryJob}
                   />
                 ))}
               </div>
@@ -334,21 +398,32 @@ const App: React.FC = () => {
                     )}
                   </button>
 
-                  <button
-                    onClick={handleDownloadAll}
-                    disabled={completedCount === 0}
-                    className="w-full flex items-center justify-center gap-2 bg-brand-50 text-brand-700 border border-brand-200 py-3 px-4 rounded-lg font-medium hover:bg-brand-100 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-                  >
-                    <Download className="w-5 h-5" />
-                    Download Printable HTML
-                  </button>
+                  <div className="grid grid-cols-2 gap-2">
+                    <button
+                      onClick={handleDownloadAll}
+                      disabled={completedCount === 0}
+                      className="col-span-1 flex flex-col items-center justify-center gap-1 bg-brand-50 text-brand-700 border border-brand-200 py-2 px-2 rounded-lg text-sm font-medium hover:bg-brand-100 disabled:opacity-50 disabled:cursor-not-allowed transition-colors h-20"
+                    >
+                      <Download className="w-5 h-5" />
+                      <span>Printable HTML</span>
+                    </button>
+
+                    <button
+                      onClick={handleDownloadWord}
+                      disabled={completedCount === 0}
+                      className="col-span-1 flex flex-col items-center justify-center gap-1 bg-blue-50 text-blue-700 border border-blue-200 py-2 px-2 rounded-lg text-sm font-medium hover:bg-blue-100 disabled:opacity-50 disabled:cursor-not-allowed transition-colors h-20"
+                    >
+                      <FileText className="w-5 h-5" />
+                      <span>Word File</span>
+                    </button>
+                  </div>
                 </div>
 
                 <div className="mt-6 pt-6 border-t border-slate-100">
                   <div className="flex items-start gap-3">
                     <AlertTriangle className="w-5 h-5 text-amber-500 flex-shrink-0 mt-0.5" />
                     <p className="text-xs text-slate-500 leading-relaxed">
-                      <strong>Tip:</strong> Press <span className="font-mono bg-slate-100 px-1">Ctrl+V</span> anywhere to paste more images. Use the crop button on items to refine selection.
+                      <strong>Tip:</strong> Word download uses inline styles. For perfect layout, use the Printable HTML option.
                     </p>
                   </div>
                 </div>
