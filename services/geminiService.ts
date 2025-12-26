@@ -85,14 +85,29 @@ const getApiKey = (): string => {
     if (typeof process !== 'undefined' && process.env && process.env.API_KEY) {
       return process.env.API_KEY;
     }
+    // Check for Vite specific env handling if applicable in future
+    // @ts-ignore
+    if (typeof import.meta !== 'undefined' && import.meta.env && import.meta.env.API_KEY) {
+       // @ts-ignore
+       return import.meta.env.API_KEY;
+    }
   } catch (e) {
     // Ignore error
   }
-  throw new Error("API Key not found. Please set the API_KEY environment variable.");
+  
+  // Return empty string here to allow the error to be caught in the main function with a better message
+  // or throw explicitly.
+  throw new Error("API Key Missing. Set 'API_KEY' in Vercel Settings or .env file.");
 };
 
 export const generateHtmlFromImage = async (file: File): Promise<string> => {
-  const apiKey = getApiKey();
+  let apiKey: string;
+  try {
+    apiKey = getApiKey();
+  } catch (e: any) {
+    throw new Error(e.message);
+  }
+
   const ai = new GoogleGenAI({ apiKey });
   
   try {
@@ -128,8 +143,8 @@ export const generateHtmlFromImage = async (file: File): Promise<string> => {
     console.error("Gemini API Error:", error);
     // Return a descriptive error message
     const message = error.message || String(error);
-    if (message.includes("API key")) {
-      throw new Error("Invalid or missing API Key.");
+    if (message.includes("API key") || message.includes("403")) {
+      throw new Error("Invalid API Key. Check Vercel Settings.");
     }
     throw new Error(message);
   }
