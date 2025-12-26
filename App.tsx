@@ -8,6 +8,7 @@ import { CropModal } from './components/CropModal';
 
 // Defined shape of the new fixed header
 interface HeaderConfig {
+  enabled: boolean;
   logoText: string;
   logoSubText: string;
   courseName: string;
@@ -20,6 +21,7 @@ interface HeaderConfig {
 }
 
 const DEFAULT_HEADER_CONFIG: HeaderConfig = {
+  enabled: true,
   logoText: 'CA CATest',
   logoSubText: 'Best Test Series for CA Exams',
   courseName: 'CA Foundation Course',
@@ -65,7 +67,7 @@ const App: React.FC = () => {
     }
   }, []);
 
-  const handleConfigChange = (key: keyof HeaderConfig, value: string) => {
+  const handleConfigChange = (key: keyof HeaderConfig, value: string | boolean) => {
     const newConfig = { ...headerConfig, [key]: value };
     setHeaderConfig(newConfig);
     localStorage.setItem('snap2print_header_config', JSON.stringify(newConfig));
@@ -210,13 +212,9 @@ const App: React.FC = () => {
       return;
     }
 
-    for (const job of jobsToProcess) {
-      const currentJob = jobs.find(j => j.id === job.id);
-      if (!currentJob) continue;
-
-      await processJob(job);
-      await new Promise(resolve => setTimeout(resolve, 500)); 
-    }
+    // Execute all jobs in parallel using Promise.all
+    // This is much faster than the previous sequential loop
+    await Promise.all(jobsToProcess.map(job => processJob(job)));
 
     setIsProcessing(false);
   };
@@ -230,7 +228,8 @@ const App: React.FC = () => {
       return;
     }
 
-    for (const job of completedJobs) {
+    // Also parallelize remixing
+    await Promise.all(completedJobs.map(async (job) => {
       try {
         setJobs(prev => prev.map(j => j.id === job.id ? { ...j, status: JobStatus.PROCESSING } : j));
         const remixedHtml = await remixHtmlContent(job.resultHtml!);
@@ -241,15 +240,21 @@ const App: React.FC = () => {
         ));
       } catch (e) {
         console.error("Remix failed for job", job.id, e);
+        // Revert status to COMPLETED if failed, so it's not stuck
         setJobs(prev => prev.map(j => j.id === job.id ? { ...j, status: JobStatus.COMPLETED } : j));
       }
-      await new Promise(resolve => setTimeout(resolve, 1000));
-    }
+    }));
+
     setIsRemixing(false);
   };
 
   // Fixed Template Generation function
   const generateHeaderHtml = (isWord: boolean) => {
+    // If not enabled, return empty string immediately
+    if (!headerConfig.enabled) {
+        return '';
+    }
+
     const { logoText, logoSubText, courseName, seriesName, marksTime, subjectTitle, instruction1, instruction2, fontFamily } = headerConfig;
     
     // Use the selected font family for the header content
@@ -315,6 +320,15 @@ const App: React.FC = () => {
 
     const headerHtml = generateHeaderHtml(false);
     const selectedFont = headerConfig.fontFamily;
+    const isHeaderEnabled = headerConfig.enabled;
+
+    // Only apply global font styles if Header is Enabled
+    const fontStyles = isHeaderEnabled ? `
+        /* FORCE SELECTED FONT EVERYWHERE */
+        body, .page-wrapper, .page-wrapper * {
+            font-family: ${selectedFont} !important;
+        }
+    ` : '';
 
     const fullHtml = `
 <!DOCTYPE html>
@@ -325,10 +339,7 @@ const App: React.FC = () => {
     <title>${headerConfig.subjectTitle}</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <style>
-        /* FORCE SELECTED FONT EVERYWHERE */
-        body, .page-wrapper, .page-wrapper * {
-            font-family: ${selectedFont} !important;
-        }
+        ${fontStyles}
 
         @media print {
             .page-break { page-break-after: always; break-after: page; display: block; height: 0; }
@@ -388,15 +399,24 @@ const App: React.FC = () => {
     if (completedJobs.length === 0) return;
 
     const selectedFont = headerConfig.fontFamily;
+    const isHeaderEnabled = headerConfig.enabled;
 
-    const preHtml = `<html xmlns:o='urn:schemas-microsoft-com:office:office' xmlns:w='urn:schemas-microsoft-com:office:word' xmlns='http://www.w3.org/TR/REC-html40'><head><meta charset='utf-8'><title>Export HTML To Doc</title>
-    <style>
+    // Only apply global font styles if Header is Enabled
+    const fontStyles = isHeaderEnabled ? `
       body { font-family: ${selectedFont}; }
       table { border-collapse: collapse; width: 100%; font-family: ${selectedFont}; }
       td, th { border: 1px solid #ddd; padding: 8px; font-family: ${selectedFont}; }
-      .page-break { page-break-after: always; }
-      /* Try to enforce font on all elements */
       * { font-family: ${selectedFont}; }
+    ` : `
+      body { font-family: Arial, sans-serif; }
+      table { border-collapse: collapse; width: 100%; }
+      td, th { border: 1px solid #ddd; padding: 8px; }
+    `;
+
+    const preHtml = `<html xmlns:o='urn:schemas-microsoft-com:office:office' xmlns:w='urn:schemas-microsoft-com:office:word' xmlns='http://www.w3.org/TR/REC-html40'><head><meta charset='utf-8'><title>Export HTML To Doc</title>
+    <style>
+      ${fontStyles}
+      .page-break { page-break-after: always; }
     </style>
     </head><body>`;
     
@@ -406,9 +426,9 @@ const App: React.FC = () => {
     const headerHtml = generateHeaderHtml(true);
 
     const innerContent = completedJobs.map((job, index) => `
-      <div class="WordSection" style="font-family: ${selectedFont};">
+      <div class="WordSection" ${isHeaderEnabled ? `style="font-family: ${selectedFont};"` : ''}>
         ${index === 0 ? headerHtml : ''}
-        <div style="font-family: ${selectedFont};">
+        <div ${isHeaderEnabled ? `style="font-family: ${selectedFont};"` : ''}>
            ${job.resultHtml}
         </div>
       </div>
@@ -429,6 +449,54 @@ const App: React.FC = () => {
     a.click();
     document.body.removeChild(a);
     URL.revokeObjectURL(url);
+  };
+
+  const handleDownloadPdf = () => {
+    const completedJobs = jobs.filter(j => j.status === JobStatus.COMPLETED && j.resultHtml);
+    if (completedJobs.length === 0) return;
+
+    const headerHtml = generateHeaderHtml(false);
+    const selectedFont = headerConfig.fontFamily;
+    const isHeaderEnabled = headerConfig.enabled;
+
+    // Create a temporary container
+    const element = document.createElement('div');
+    element.style.width = '210mm'; // A4 Width
+    element.style.padding = '10mm';
+    element.style.backgroundColor = 'white';
+    if (isHeaderEnabled) {
+       element.style.fontFamily = selectedFont;
+    }
+    
+    // Construct HTML content
+    // Note: html2pdf renders what's in the DOM. We construct a single vertical list.
+    const content = completedJobs.map((job, index) => `
+        <div style="margin-bottom: 20px; page-break-after: always; ${isHeaderEnabled ? `font-family: ${selectedFont};` : ''}">
+             ${index === 0 ? headerHtml : ''}
+             <div style="${isHeaderEnabled ? `font-family: ${selectedFont};` : ''}">
+                ${job.resultHtml}
+             </div>
+        </div>
+    `).join('');
+
+    element.innerHTML = content;
+
+    // Configuration for html2pdf
+    const opt = {
+      margin: 10,
+      filename: 'document.pdf',
+      image: { type: 'jpeg', quality: 0.98 },
+      html2canvas: { scale: 2, useCORS: true },
+      jsPDF: { unit: 'mm', format: 'a4', orientation: 'portrait' }
+    };
+
+    // @ts-ignore
+    if (window.html2pdf) {
+        // @ts-ignore
+        window.html2pdf().set(opt).from(element).save();
+    } else {
+        alert("PDF Generator is loading. Please try again in 3 seconds.");
+    }
   };
 
   const completedCount = jobs.filter(j => j.status === JobStatus.COMPLETED).length;
@@ -513,106 +581,127 @@ const App: React.FC = () => {
               <div className="sticky top-24 space-y-6">
                 
                 {/* Header Settings Section */}
-                <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-4">
-                    <h3 className="font-semibold text-slate-800 mb-3 flex items-center gap-2 pb-2 border-b border-slate-100">
-                        <FileType className="w-4 h-4 text-brand-600" />
-                        Header Configuration
-                    </h3>
-                    
-                    <div className="space-y-3 mt-3">
-                        {/* Font Selection */}
-                        <div className="bg-slate-50 p-2 rounded border border-slate-200 mb-2">
-                           <label className="block text-xs font-bold text-slate-700 mb-1 flex items-center gap-1">
-                             <Type className="w-3 h-3" /> Font Style
-                           </label>
-                           <select
-                              value={headerConfig.fontFamily}
-                              onChange={(e) => handleConfigChange('fontFamily', e.target.value)}
-                              className="w-full px-2 py-1.5 border border-slate-300 rounded text-sm focus:border-brand-500 outline-none bg-white"
-                           >
-                              {AVAILABLE_FONTS.map(f => (
-                                <option key={f.value} value={f.value}>{f.label}</option>
-                              ))}
-                           </select>
-                        </div>
-
-                        <div>
-                            <label className="block text-xs font-semibold text-slate-500 mb-1">Logo Text (Top Right)</label>
-                            <input 
-                                type="text" 
-                                value={headerConfig.logoText}
-                                onChange={(e) => handleConfigChange('logoText', e.target.value)}
-                                className="w-full px-2 py-1.5 border border-slate-300 rounded text-sm focus:border-brand-500 outline-none"
-                            />
-                        </div>
-                        <div>
-                            <label className="block text-xs font-semibold text-slate-500 mb-1">Logo Sub-Text</label>
-                            <input 
-                                type="text" 
-                                value={headerConfig.logoSubText}
-                                onChange={(e) => handleConfigChange('logoSubText', e.target.value)}
-                                className="w-full px-2 py-1.5 border border-slate-300 rounded text-sm focus:border-brand-500 outline-none"
-                            />
-                        </div>
+                <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-4 transition-all">
+                    <div className="flex items-center justify-between pb-2 border-b border-slate-100 mb-3">
+                         <h3 className="font-semibold text-slate-800 flex items-center gap-2">
+                            <FileType className="w-4 h-4 text-brand-600" />
+                            Header Configuration
+                        </h3>
                         
-                        <div className="grid grid-cols-2 gap-2">
-                             <div>
-                                <label className="block text-xs font-semibold text-slate-500 mb-1">Course Name</label>
+                        {/* Toggle Switch */}
+                        <label className="relative inline-flex items-center cursor-pointer" title="Enable/Disable Header">
+                            <input 
+                                type="checkbox" 
+                                checked={headerConfig.enabled} 
+                                onChange={(e) => handleConfigChange('enabled', e.target.checked)}
+                                className="sr-only peer" 
+                            />
+                            <div className="w-9 h-5 bg-slate-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-brand-600"></div>
+                        </label>
+                    </div>
+                    
+                    {headerConfig.enabled ? (
+                        <div className="space-y-3 mt-3 animate-in slide-in-from-top-1 duration-200 fade-in">
+                            {/* Font Selection */}
+                            <div className="bg-slate-50 p-2 rounded border border-slate-200 mb-2">
+                            <label className="block text-xs font-bold text-slate-700 mb-1 flex items-center gap-1">
+                                <Type className="w-3 h-3" /> Font Style
+                            </label>
+                            <select
+                                value={headerConfig.fontFamily}
+                                onChange={(e) => handleConfigChange('fontFamily', e.target.value)}
+                                className="w-full px-2 py-1.5 border border-slate-300 rounded text-sm focus:border-brand-500 outline-none bg-white"
+                            >
+                                {AVAILABLE_FONTS.map(f => (
+                                    <option key={f.value} value={f.value}>{f.label}</option>
+                                ))}
+                            </select>
+                            </div>
+
+                            <div>
+                                <label className="block text-xs font-semibold text-slate-500 mb-1">Logo Text (Top Right)</label>
                                 <input 
                                     type="text" 
-                                    value={headerConfig.courseName}
-                                    onChange={(e) => handleConfigChange('courseName', e.target.value)}
+                                    value={headerConfig.logoText}
+                                    onChange={(e) => handleConfigChange('logoText', e.target.value)}
                                     className="w-full px-2 py-1.5 border border-slate-300 rounded text-sm focus:border-brand-500 outline-none"
                                 />
                             </div>
                             <div>
-                                <label className="block text-xs font-semibold text-slate-500 mb-1">Series Info</label>
+                                <label className="block text-xs font-semibold text-slate-500 mb-1">Logo Sub-Text</label>
                                 <input 
                                     type="text" 
-                                    value={headerConfig.seriesName}
-                                    onChange={(e) => handleConfigChange('seriesName', e.target.value)}
+                                    value={headerConfig.logoSubText}
+                                    onChange={(e) => handleConfigChange('logoSubText', e.target.value)}
                                     className="w-full px-2 py-1.5 border border-slate-300 rounded text-sm focus:border-brand-500 outline-none"
                                 />
                             </div>
-                        </div>
+                            
+                            <div className="grid grid-cols-2 gap-2">
+                                <div>
+                                    <label className="block text-xs font-semibold text-slate-500 mb-1">Course Name</label>
+                                    <input 
+                                        type="text" 
+                                        value={headerConfig.courseName}
+                                        onChange={(e) => handleConfigChange('courseName', e.target.value)}
+                                        className="w-full px-2 py-1.5 border border-slate-300 rounded text-sm focus:border-brand-500 outline-none"
+                                    />
+                                </div>
+                                <div>
+                                    <label className="block text-xs font-semibold text-slate-500 mb-1">Series Info</label>
+                                    <input 
+                                        type="text" 
+                                        value={headerConfig.seriesName}
+                                        onChange={(e) => handleConfigChange('seriesName', e.target.value)}
+                                        className="w-full px-2 py-1.5 border border-slate-300 rounded text-sm focus:border-brand-500 outline-none"
+                                    />
+                                </div>
+                            </div>
 
-                        <div>
-                            <label className="block text-xs font-semibold text-slate-500 mb-1">Marks & Time</label>
-                            <input 
-                                type="text" 
-                                value={headerConfig.marksTime}
-                                onChange={(e) => handleConfigChange('marksTime', e.target.value)}
-                                className="w-full px-2 py-1.5 border border-slate-300 rounded text-sm focus:border-brand-500 outline-none"
-                            />
-                        </div>
+                            <div>
+                                <label className="block text-xs font-semibold text-slate-500 mb-1">Marks & Time</label>
+                                <input 
+                                    type="text" 
+                                    value={headerConfig.marksTime}
+                                    onChange={(e) => handleConfigChange('marksTime', e.target.value)}
+                                    className="w-full px-2 py-1.5 border border-slate-300 rounded text-sm focus:border-brand-500 outline-none"
+                                />
+                            </div>
 
-                        <div className="pt-2 border-t border-slate-100">
-                             <label className="block text-xs font-bold text-slate-800 mb-1">SUBJECT / PAPER TITLE</label>
-                            <input 
-                                type="text" 
-                                value={headerConfig.subjectTitle}
-                                onChange={(e) => handleConfigChange('subjectTitle', e.target.value)}
-                                className="w-full px-2 py-2 border border-slate-300 rounded text-sm font-bold bg-slate-50 focus:border-brand-500 outline-none"
-                            />
-                        </div>
+                            <div className="pt-2 border-t border-slate-100">
+                                <label className="block text-xs font-bold text-slate-800 mb-1">SUBJECT / PAPER TITLE</label>
+                                <input 
+                                    type="text" 
+                                    value={headerConfig.subjectTitle}
+                                    onChange={(e) => handleConfigChange('subjectTitle', e.target.value)}
+                                    className="w-full px-2 py-2 border border-slate-300 rounded text-sm font-bold bg-slate-50 focus:border-brand-500 outline-none"
+                                />
+                            </div>
 
-                        <div className="pt-2 border-t border-slate-100">
-                            <label className="block text-xs font-semibold text-slate-500 mb-1">Instruction 1 (Bold)</label>
-                            <input 
-                                type="text" 
-                                value={headerConfig.instruction1}
-                                onChange={(e) => handleConfigChange('instruction1', e.target.value)}
-                                className="w-full px-2 py-1.5 border border-slate-300 rounded text-sm focus:border-brand-500 outline-none"
-                            />
-                            <label className="block text-xs font-semibold text-slate-500 mt-2 mb-1">Instruction 2</label>
-                            <textarea 
-                                value={headerConfig.instruction2}
-                                onChange={(e) => handleConfigChange('instruction2', e.target.value)}
-                                rows={2}
-                                className="w-full px-2 py-1.5 border border-slate-300 rounded text-sm focus:border-brand-500 outline-none resize-none"
-                            />
+                            <div className="pt-2 border-t border-slate-100">
+                                <label className="block text-xs font-semibold text-slate-500 mb-1">Instruction 1 (Bold)</label>
+                                <input 
+                                    type="text" 
+                                    value={headerConfig.instruction1}
+                                    onChange={(e) => handleConfigChange('instruction1', e.target.value)}
+                                    className="w-full px-2 py-1.5 border border-slate-300 rounded text-sm focus:border-brand-500 outline-none"
+                                />
+                                <label className="block text-xs font-semibold text-slate-500 mt-2 mb-1">Instruction 2</label>
+                                <textarea 
+                                    value={headerConfig.instruction2}
+                                    onChange={(e) => handleConfigChange('instruction2', e.target.value)}
+                                    rows={2}
+                                    className="w-full px-2 py-1.5 border border-slate-300 rounded text-sm focus:border-brand-500 outline-none resize-none"
+                                />
+                            </div>
                         </div>
-                    </div>
+                    ) : (
+                        <div className="py-4 text-center">
+                            <p className="text-xs text-slate-400 italic">
+                                Header disabled. Pages will be generated with direct HTML content only.
+                            </p>
+                        </div>
+                    )}
                 </div>
 
                 {/* Actions Section */}
@@ -656,23 +745,32 @@ const App: React.FC = () => {
                       )}
                     </button>
 
-                    <div className="grid grid-cols-2 gap-2">
+                    <div className="grid grid-cols-3 gap-2">
                       <button
                         onClick={handleDownloadAll}
                         disabled={completedCount === 0}
-                        className="col-span-1 flex flex-col items-center justify-center gap-1 bg-brand-50 text-brand-700 border border-brand-200 py-2 px-2 rounded-lg text-sm font-medium hover:bg-brand-100 disabled:opacity-50 disabled:cursor-not-allowed transition-colors h-20"
+                        className="col-span-1 flex flex-col items-center justify-center gap-1 bg-brand-50 text-brand-700 border border-brand-200 py-2 px-1 rounded-lg text-xs font-medium hover:bg-brand-100 disabled:opacity-50 disabled:cursor-not-allowed transition-colors h-20 text-center"
+                      >
+                        <Printer className="w-5 h-5" />
+                        <span>Print/HTML</span>
+                      </button>
+
+                       <button
+                        onClick={handleDownloadPdf}
+                        disabled={completedCount === 0}
+                        className="col-span-1 flex flex-col items-center justify-center gap-1 bg-red-50 text-red-700 border border-red-200 py-2 px-1 rounded-lg text-xs font-medium hover:bg-red-100 disabled:opacity-50 disabled:cursor-not-allowed transition-colors h-20 text-center"
                       >
                         <Download className="w-5 h-5" />
-                        <span>Printable HTML</span>
+                        <span>PDF</span>
                       </button>
 
                       <button
                         onClick={handleDownloadWord}
                         disabled={completedCount === 0}
-                        className="col-span-1 flex flex-col items-center justify-center gap-1 bg-blue-50 text-blue-700 border border-blue-200 py-2 px-2 rounded-lg text-sm font-medium hover:bg-blue-100 disabled:opacity-50 disabled:cursor-not-allowed transition-colors h-20"
+                        className="col-span-1 flex flex-col items-center justify-center gap-1 bg-blue-50 text-blue-700 border border-blue-200 py-2 px-1 rounded-lg text-xs font-medium hover:bg-blue-100 disabled:opacity-50 disabled:cursor-not-allowed transition-colors h-20 text-center"
                       >
                         <FileText className="w-5 h-5" />
-                        <span>Word File</span>
+                        <span>Word</span>
                       </button>
                     </div>
                   </div>
@@ -681,7 +779,7 @@ const App: React.FC = () => {
                     <div className="flex items-start gap-3">
                       <AlertTriangle className="w-5 h-5 text-amber-500 flex-shrink-0 mt-0.5" />
                       <p className="text-xs text-slate-500 leading-relaxed">
-                        <strong>Tip:</strong> Word download uses inline styles. For perfect layout, use the Printable HTML option.
+                        <strong>Tip:</strong> Word download uses inline styles. For perfect layout, use the Printable HTML or PDF option.
                       </p>
                     </div>
                   </div>
@@ -703,7 +801,7 @@ const App: React.FC = () => {
       {/* Footer with Visitor Counter */}
       <footer className="py-6 border-t border-slate-200 bg-white mt-auto">
         <div className="max-w-5xl mx-auto px-4 flex flex-col sm:flex-row items-center justify-between text-slate-500 text-sm gap-4">
-          <p>© {new Date().getFullYear()} Snap2Print. All rights reserved.</p>
+          <p>© {new Date().getFullYear()} prakash. All rights reserved.</p>
           <div className="flex items-center gap-2 bg-slate-100 px-4 py-2 rounded-full shadow-sm">
              <Users className="w-4 h-4 text-brand-600" />
              <span className="font-semibold text-slate-700">
