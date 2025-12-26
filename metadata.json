@@ -1,0 +1,5 @@
+{
+  "name": "Snap2Print HTML Converter",
+  "description": "Convert multiple images into pixel-perfect, print-ready HTML pages using Gemini AI.",
+  "requestFramePermissions": []
+}
