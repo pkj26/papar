@@ -80,24 +80,34 @@ export const fileToGenerativePart = async (file: File): Promise<{ mimeType: stri
 };
 
 const getApiKey = (): string => {
-  // Safe access to process.env to avoid ReferenceError in some browser environments
+  // Helper to safely return a valid string key
+  const isValid = (key: any) => typeof key === 'string' && key.length > 0;
+
+  // 1. Check standard process.env (Node/Webpack)
+  if (typeof process !== 'undefined' && process.env) {
+    if (isValid(process.env.API_KEY)) return process.env.API_KEY!;
+    if (isValid(process.env.VITE_API_KEY)) return process.env.VITE_API_KEY!;
+    if (isValid(process.env.REACT_APP_API_KEY)) return process.env.REACT_APP_API_KEY!;
+    if (isValid(process.env.NEXT_PUBLIC_API_KEY)) return process.env.NEXT_PUBLIC_API_KEY!;
+  }
+
+  // 2. Check import.meta.env (Vite standard)
   try {
-    if (typeof process !== 'undefined' && process.env && process.env.API_KEY) {
-      return process.env.API_KEY;
-    }
-    // Check for Vite specific env handling if applicable in future
     // @ts-ignore
-    if (typeof import.meta !== 'undefined' && import.meta.env && import.meta.env.API_KEY) {
-       // @ts-ignore
-       return import.meta.env.API_KEY;
+    if (typeof import.meta !== 'undefined' && import.meta.env) {
+      // @ts-ignore
+      if (isValid(import.meta.env.API_KEY)) return import.meta.env.API_KEY;
+      // @ts-ignore
+      if (isValid(import.meta.env.VITE_API_KEY)) return import.meta.env.VITE_API_KEY;
+      // @ts-ignore
+      if (isValid(import.meta.env.NEXT_PUBLIC_API_KEY)) return import.meta.env.NEXT_PUBLIC_API_KEY;
     }
   } catch (e) {
-    // Ignore error
+    // Ignore import.meta access errors
   }
   
-  // Return empty string here to allow the error to be caught in the main function with a better message
-  // or throw explicitly.
-  throw new Error("API Key Missing. Set 'API_KEY' in Vercel Settings or .env file.");
+  // If we reach here, no key was found.
+  throw new Error("API Key Missing. In Vercel Settings, try naming your variable 'VITE_API_KEY' (or 'REACT_APP_API_KEY') and then REDEPLOY the project.");
 };
 
 export const generateHtmlFromImage = async (file: File): Promise<string> => {
@@ -144,7 +154,7 @@ export const generateHtmlFromImage = async (file: File): Promise<string> => {
     // Return a descriptive error message
     const message = error.message || String(error);
     if (message.includes("API key") || message.includes("403")) {
-      throw new Error("Invalid API Key. Check Vercel Settings.");
+      throw new Error("Invalid API Key. Please check your Vercel Environment Variables.");
     }
     throw new Error(message);
   }
