@@ -35,7 +35,7 @@ export const JobItem: React.FC<JobItemProps> = ({ job, onRemove, onPreview, onCr
           {(job.file.size / 1024).toFixed(1)} KB
         </p>
         
-        <div className="mt-2 flex items-center gap-2">
+        <div className="mt-2 flex items-center gap-2 flex-wrap">
           {job.status === JobStatus.IDLE && (
             <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-slate-100 text-slate-800">
               Ready
@@ -54,9 +54,12 @@ export const JobItem: React.FC<JobItemProps> = ({ job, onRemove, onPreview, onCr
             </span>
           )}
           {job.status === JobStatus.ERROR && (
-            <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-red-100 text-red-800">
+            <span 
+              className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-red-100 text-red-800 cursor-help"
+              title={job.error}
+            >
               <AlertCircle className="w-3 h-3 mr-1" />
-              Failed
+              {job.error ? job.error.substring(0, 30) + (job.error.length > 30 ? '...' : '') : 'Failed'}
             </span>
           )}
         </div>

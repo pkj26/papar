@@ -60,23 +60,44 @@ export const fileToGenerativePart = async (file: File): Promise<{ mimeType: stri
     const reader = new FileReader();
     reader.onloadend = () => {
       const base64String = reader.result as string;
+      
+      // Robust MIME type detection from the Data URL
+      // Data URL format: data:[<mediatype>][;base64],<data>
+      const matches = base64String.match(/^data:([^;]+);base64,/);
+      let mimeType = matches ? matches[1] : file.type;
+
+      // Fallback if MIME type is empty or unknown (common with clipboard files)
+      if (!mimeType || mimeType === 'application/octet-stream') {
+        mimeType = 'image/png'; // Assume PNG for unknown image clipboard data
+      }
+
       const base64Data = base64String.split(',')[1];
-      resolve({ mimeType: file.type, data: base64Data });
+      resolve({ mimeType, data: base64Data });
     };
-    reader.onerror = reject;
+    reader.onerror = (error) => reject(new Error("Failed to read file: " + error));
     reader.readAsDataURL(file);
   });
 };
 
-export const generateHtmlFromImage = async (file: File): Promise<string> => {
-  if (!process.env.API_KEY) {
-    throw new Error("API Key not found in environment variables.");
-  }
-
-  const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
-  const { mimeType, data } = await fileToGenerativePart(file);
-
+const getApiKey = (): string => {
+  // Safe access to process.env to avoid ReferenceError in some browser environments
   try {
+    if (typeof process !== 'undefined' && process.env && process.env.API_KEY) {
+      return process.env.API_KEY;
+    }
+  } catch (e) {
+    // Ignore error
+  }
+  throw new Error("API Key not found. Please set the API_KEY environment variable.");
+};
+
+export const generateHtmlFromImage = async (file: File): Promise<string> => {
+  const apiKey = getApiKey();
+  const ai = new GoogleGenAI({ apiKey });
+  
+  try {
+    const { mimeType, data } = await fileToGenerativePart(file);
+
     const response = await ai.models.generateContent({
       model: 'gemini-3-flash-preview', 
       contents: {
@@ -103,8 +124,13 @@ export const generateHtmlFromImage = async (file: File): Promise<string> => {
     text = text.replace(/```html/g, '').replace(/```/g, '').trim();
     
     return text;
-  } catch (error) {
+  } catch (error: any) {
     console.error("Gemini API Error:", error);
-    throw new Error("Failed to generate HTML. Please try again.");
+    // Return a descriptive error message
+    const message = error.message || String(error);
+    if (message.includes("API key")) {
+      throw new Error("Invalid or missing API Key.");
+    }
+    throw new Error(message);
   }
 };

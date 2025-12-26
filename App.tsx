@@ -1,5 +1,5 @@
 import React, { useState, useCallback, useRef, useEffect } from 'react';
-import { Upload, FileText, Printer, Download, Sparkles, AlertTriangle, ClipboardPaste } from 'lucide-react';
+import { Upload, FileText, Printer, Download, Sparkles, AlertTriangle, ClipboardPaste, Users } from 'lucide-react';
 import { ImageJob, JobStatus } from './types';
 import { generateHtmlFromImage } from './services/geminiService';
 import { JobItem } from './components/JobItem';
@@ -10,11 +10,26 @@ const App: React.FC = () => {
   const [jobs, setJobs] = useState<ImageJob[]>([]);
   const [isProcessing, setIsProcessing] = useState(false);
   const [previewHtml, setPreviewHtml] = useState<string | null>(null);
+  const [visitCount, setVisitCount] = useState<number | null>(null);
   
   // State for Cropping
   const [croppingJobId, setCroppingJobId] = useState<string | null>(null);
   
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // Visitor Counter
+  useEffect(() => {
+    // Using counterapi.dev to track visits
+    // Namespace: snap2print-tracker, Key: visits
+    fetch('https://api.counterapi.dev/v1/snap2print-tracker/visits/up')
+      .then(res => res.json())
+      .then(data => {
+        if (data && data.count) {
+          setVisitCount(data.count);
+        }
+      })
+      .catch(err => console.error('Failed to load visitor count:', err));
+  }, []);
 
   // Helper to add files to state
   const addFiles = useCallback((newFiles: File[]) => {
@@ -48,16 +63,25 @@ const App: React.FC = () => {
       if (!items) return;
 
       const pastedFiles: File[] = [];
+      
       for (let i = 0; i < items.length; i++) {
         if (items[i].type.indexOf('image') !== -1) {
           const file = items[i].getAsFile();
           if (file) {
-            pastedFiles.push(file);
+            // Give pasted files a unique name and explicit type
+            // This helps if the clipboard file has missing metadata
+            const timestamp = new Date().getTime();
+            const ext = file.type.split('/')[1] || 'png';
+            const newName = `pasted-image-${timestamp}-${i}.${ext}`;
+            const renamedFile = new File([file], newName, { type: file.type || 'image/png' });
+            
+            pastedFiles.push(renamedFile);
           }
         }
       }
       
       if (pastedFiles.length > 0) {
+        e.preventDefault(); // Prevent default only if we captured images
         addFiles(pastedFiles);
       }
     };
@@ -116,7 +140,7 @@ const App: React.FC = () => {
 
     // Set all filtered jobs to PROCESSING status immediately
     const processingIds = new Set(jobsToProcess.map(j => j.id));
-    setJobs(prev => prev.map(j => processingIds.has(j.id) ? { ...j, status: JobStatus.PROCESSING } : j));
+    setJobs(prev => prev.map(j => processingIds.has(j.id) ? { ...j, status: JobStatus.PROCESSING, error: undefined } : j));
 
     // Process all jobs in parallel using Promise.all
     const promises = jobsToProcess.map(async (job) => {
@@ -128,11 +152,11 @@ const App: React.FC = () => {
             ? { ...j, status: JobStatus.COMPLETED, resultHtml: generatedHtml } 
             : j
         ));
-      } catch (error) {
+      } catch (error: any) {
         console.error(`Job ${job.id} failed:`, error);
         setJobs(prev => prev.map(j => 
           j.id === job.id 
-            ? { ...j, status: JobStatus.ERROR, error: 'Failed' } 
+            ? { ...j, status: JobStatus.ERROR, error: error.message || 'Processing failed' } 
             : j
         ));
       }
@@ -341,6 +365,19 @@ const App: React.FC = () => {
           </div>
         )}
       </main>
+
+      {/* Footer with Visitor Counter */}
+      <footer className="py-6 border-t border-slate-200 bg-white mt-auto">
+        <div className="max-w-5xl mx-auto px-4 flex flex-col sm:flex-row items-center justify-between text-slate-500 text-sm gap-4">
+          <p>© {new Date().getFullYear()} Snap2Print. All rights reserved.</p>
+          <div className="flex items-center gap-2 bg-slate-100 px-4 py-2 rounded-full shadow-sm">
+             <Users className="w-4 h-4 text-brand-600" />
+             <span className="font-semibold text-slate-700">
+               {visitCount !== null ? `${visitCount.toLocaleString()} Visitors` : 'Counting...'}
+             </span>
+          </div>
+        </div>
+      </footer>
 
       {/* Hidden File Input */}
       <input
