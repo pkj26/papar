@@ -22,6 +22,27 @@ Your task is to convert an image of a document or web page into a PIXEL-PERFECT 
 * Ensure the code is responsive but optimized for print and MS Word export.
 `;
 
+const REMIX_PROMPT = `
+You are an expert Exam Setter and Teacher.
+I will provide you with HTML code representing an exam paper or worksheet.
+Your task is to **CREATE A NEW VERSION** of this test paper by changing the questions, while keeping the **EXACT SAME LAYOUT AND STYLING**.
+
+**Instructions:**
+1. **Analyze Context**: Identify the subject (Math, Science, History, etc.) and the topic of the questions.
+2. **Modify Questions**:
+   - **Mathematics/Physics**: Change the numbers/values in the problems. Keep the logic and formula required the same. (e.g., if 2x + 4 = 10, change to 3x + 6 = 15).
+   - **Theory (History/Bio/English)**: Replace the question with a DIFFERENT valid question from the SAME TOPIC/CHAPTER. (e.g., If asking about Newton's 1st Law, ask about Newton's 2nd Law or an example of the 1st Law).
+   - **Multiple Choice**: Change the question and the options. Ensure there is still one correct answer.
+3. **Preserve Structure**:
+   - **DO NOT CHANGE** the HTML structure, classes, or inline styles. The visual look must be identical.
+   - **DO NOT CHANGE** static headers like "School Name", "Time Allowed", "Instructions", "Student Name", "Roll No". Only change the actual content of the questions.
+4. **Output**: Return the complete HTML with the new questions.
+
+**Output Rules:**
+* Return ONLY the HTML code.
+* Do NOT include markdown formatting.
+`;
+
 /**
  * Resizes and compresses an image file to reduce payload size and speed up API processing.
  * Max dimension: 1536px (enough for A4 clarity)
@@ -177,6 +198,43 @@ export const generateHtmlFromImage = async (file: File): Promise<string> => {
     }
     if (message.includes("429")) {
         throw new Error("Too many requests (429). Please Retry.");
+    }
+    throw new Error(message);
+  }
+};
+
+export const remixHtmlContent = async (html: string): Promise<string> => {
+  let apiKey: string;
+  try {
+    apiKey = getApiKey();
+  } catch (e: any) {
+    throw new Error(e.message);
+  }
+
+  const ai = new GoogleGenAI({ apiKey });
+
+  try {
+    const response = await ai.models.generateContent({
+      model: 'gemini-3-flash-preview',
+      contents: {
+        role: 'user',
+        parts: [{ text: `Here is the HTML code:\n\n${html}` }]
+      },
+      config: {
+        systemInstruction: REMIX_PROMPT,
+        temperature: 0.7, // Higher temperature for creativity in new questions
+      }
+    });
+
+    let text = response.text || "";
+    text = text.replace(/```html/g, '').replace(/```/g, '').trim();
+
+    return text;
+  } catch (error: any) {
+    console.error("Gemini API Error (Remix):", error);
+    const message = error.message || String(error);
+    if (message.includes("429")) {
+        throw new Error("Too many requests (429). Please wait a moment and retry.");
     }
     throw new Error(message);
   }

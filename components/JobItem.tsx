@@ -69,13 +69,15 @@ export const JobItem: React.FC<JobItemProps> = ({ job, onRemove, onPreview, onCr
       {/* Actions */}
       <div className="ml-4 flex items-center gap-2">
         {job.status === JobStatus.IDLE && (
-          <button
-            onClick={() => onCrop(job.id)}
-            className="p-2 text-slate-500 hover:text-brand-600 hover:bg-brand-50 rounded-full transition-colors"
-            title="Crop Image"
-          >
-            <Crop className="w-5 h-5" />
-          </button>
+          <>
+            <button
+              onClick={() => onCrop(job.id)}
+              className="p-2 text-slate-500 hover:text-brand-600 hover:bg-brand-50 rounded-full transition-colors"
+              title="Crop Image"
+            >
+              <Crop className="w-5 h-5" />
+            </button>
+          </>
         )}
 
         {job.status === JobStatus.ERROR && (

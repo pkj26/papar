@@ -1,26 +1,78 @@
 import React, { useState, useCallback, useRef, useEffect } from 'react';
-import { Upload, Printer, Download, Sparkles, AlertTriangle, ClipboardPaste, Users, FileText } from 'lucide-react';
+import { Upload, Printer, Download, Sparkles, AlertTriangle, ClipboardPaste, Users, FileText, Shuffle, FileType, Trash2, Type } from 'lucide-react';
 import { ImageJob, JobStatus } from './types';
-import { generateHtmlFromImage } from './services/geminiService';
+import { generateHtmlFromImage, remixHtmlContent, fileToGenerativePart } from './services/geminiService';
 import { JobItem } from './components/JobItem';
 import { PreviewModal } from './components/PreviewModal';
 import { CropModal } from './components/CropModal';
 
+// Defined shape of the new fixed header
+interface HeaderConfig {
+  logoText: string;
+  logoSubText: string;
+  courseName: string;
+  seriesName: string;
+  marksTime: string;
+  subjectTitle: string;
+  instruction1: string;
+  instruction2: string;
+  fontFamily: string;
+}
+
+const DEFAULT_HEADER_CONFIG: HeaderConfig = {
+  logoText: 'CA CATest',
+  logoSubText: 'Best Test Series for CA Exams',
+  courseName: 'CA Foundation Course',
+  seriesName: '(Mock Test Paper – Series : 1-2)',
+  marksTime: 'MAXIMUM MARKS: 100     TIMING: 3 1/4 Hours',
+  subjectTitle: 'PAPER 1 : ACCOUNTING',
+  instruction1: 'Question No. 1 is compulsory.',
+  instruction2: 'Candidates are required to answer any four questions from the remaining five questions.',
+  fontFamily: 'Arial, sans-serif'
+};
+
+const AVAILABLE_FONTS = [
+  { label: 'Arial (Standard)', value: 'Arial, sans-serif' },
+  { label: 'Times New Roman (Serif)', value: '"Times New Roman", Times, serif' },
+  { label: 'Courier New (Mono)', value: '"Courier New", Courier, monospace' },
+  { label: 'Verdana (Wide)', value: 'Verdana, Geneva, sans-serif' },
+];
+
 const App: React.FC = () => {
   const [jobs, setJobs] = useState<ImageJob[]>([]);
   const [isProcessing, setIsProcessing] = useState(false);
+  const [isRemixing, setIsRemixing] = useState(false);
   const [previewHtml, setPreviewHtml] = useState<string | null>(null);
   const [visitCount, setVisitCount] = useState<number | null>(null);
+  
+  // Header Settings State (Structured)
+  const [headerConfig, setHeaderConfig] = useState<HeaderConfig>(DEFAULT_HEADER_CONFIG);
   
   // State for Cropping
   const [croppingJobId, setCroppingJobId] = useState<string | null>(null);
   
   const fileInputRef = useRef<HTMLInputElement>(null);
 
+  // Load Header Settings from LocalStorage on mount
+  useEffect(() => {
+    try {
+      const savedConfig = localStorage.getItem('snap2print_header_config');
+      if (savedConfig) {
+        setHeaderConfig({ ...DEFAULT_HEADER_CONFIG, ...JSON.parse(savedConfig) });
+      }
+    } catch (e) {
+      console.error("Failed to load header config", e);
+    }
+  }, []);
+
+  const handleConfigChange = (key: keyof HeaderConfig, value: string) => {
+    const newConfig = { ...headerConfig, [key]: value };
+    setHeaderConfig(newConfig);
+    localStorage.setItem('snap2print_header_config', JSON.stringify(newConfig));
+  };
+
   // Visitor Counter
   useEffect(() => {
-    // Using counterapi.dev to track visits
-    // Namespace: snap2print-tracker, Key: visits
     fetch('https://api.counterapi.dev/v1/snap2print-tracker/visits/up')
       .then(res => res.json())
       .then(data => {
@@ -68,8 +120,6 @@ const App: React.FC = () => {
         if (items[i].type.indexOf('image') !== -1) {
           const file = items[i].getAsFile();
           if (file) {
-            // Give pasted files a unique name and explicit type
-            // This helps if the clipboard file has missing metadata
             const timestamp = new Date().getTime();
             const ext = file.type.split('/')[1] || 'png';
             const newName = `pasted-image-${timestamp}-${i}.${ext}`;
@@ -81,7 +131,7 @@ const App: React.FC = () => {
       }
       
       if (pastedFiles.length > 0) {
-        e.preventDefault(); // Prevent default only if we captured images
+        e.preventDefault(); 
         addFiles(pastedFiles);
       }
     };
@@ -94,7 +144,6 @@ const App: React.FC = () => {
 
   const handleRemoveJob = (id: string) => {
     setJobs(prev => {
-      // Revoke object URL to avoid memory leaks
       const job = prev.find(j => j.id === id);
       if (job) URL.revokeObjectURL(job.previewUrl);
       return prev.filter(job => job.id !== id);
@@ -111,13 +160,12 @@ const App: React.FC = () => {
 
     setJobs(prev => prev.map(job => {
       if (job.id === croppingJobId) {
-        // Revoke old URL
         URL.revokeObjectURL(job.previewUrl);
         return {
           ...job,
           file: croppedFile,
           previewUrl: URL.createObjectURL(croppedFile),
-          status: JobStatus.IDLE, // Reset status if it was processed
+          status: JobStatus.IDLE, 
           resultHtml: undefined,
           error: undefined
         };
@@ -129,11 +177,8 @@ const App: React.FC = () => {
 
   const processJob = async (job: ImageJob) => {
     try {
-      // Update status to PROCESSING
       setJobs(prev => prev.map(j => j.id === job.id ? { ...j, status: JobStatus.PROCESSING, error: undefined } : j));
-      
       const generatedHtml = await generateHtmlFromImage(job.file);
-      
       setJobs(prev => prev.map(j => 
         j.id === job.id 
           ? { ...j, status: JobStatus.COMPLETED, resultHtml: generatedHtml } 
@@ -158,8 +203,6 @@ const App: React.FC = () => {
 
   const handleProcessAll = async () => {
     setIsProcessing(true);
-    
-    // Filter jobs that need processing (IDLE or ERROR)
     const jobsToProcess = jobs.filter(j => j.status === JobStatus.IDLE || j.status === JobStatus.ERROR);
 
     if (jobsToProcess.length === 0) {
@@ -167,36 +210,126 @@ const App: React.FC = () => {
       return;
     }
 
-    // Process sequentially (one by one) to avoid Rate Limits (429)
-    // Parallel processing with Promise.all triggers rate limits quickly on free tier
     for (const job of jobsToProcess) {
-      // Check if job still exists (wasn't deleted while processing others)
       const currentJob = jobs.find(j => j.id === job.id);
       if (!currentJob) continue;
 
       await processJob(job);
-      
-      // Small delay between requests to be gentle on the API
       await new Promise(resolve => setTimeout(resolve, 500)); 
     }
 
     setIsProcessing(false);
   };
 
+  const handleRemixAll = async () => {
+    setIsRemixing(true);
+    const completedJobs = jobs.filter(j => j.status === JobStatus.COMPLETED && j.resultHtml);
+    
+    if (completedJobs.length === 0) {
+      setIsRemixing(false);
+      return;
+    }
+
+    for (const job of completedJobs) {
+      try {
+        setJobs(prev => prev.map(j => j.id === job.id ? { ...j, status: JobStatus.PROCESSING } : j));
+        const remixedHtml = await remixHtmlContent(job.resultHtml!);
+        setJobs(prev => prev.map(j => 
+          j.id === job.id 
+            ? { ...j, status: JobStatus.COMPLETED, resultHtml: remixedHtml } 
+            : j
+        ));
+      } catch (e) {
+        console.error("Remix failed for job", job.id, e);
+        setJobs(prev => prev.map(j => j.id === job.id ? { ...j, status: JobStatus.COMPLETED } : j));
+      }
+      await new Promise(resolve => setTimeout(resolve, 1000));
+    }
+    setIsRemixing(false);
+  };
+
+  // Fixed Template Generation function
+  const generateHeaderHtml = (isWord: boolean) => {
+    const { logoText, logoSubText, courseName, seriesName, marksTime, subjectTitle, instruction1, instruction2, fontFamily } = headerConfig;
+    
+    // Use the selected font family for the header content
+    const style = `font-family: ${fontFamily};`;
+
+    return `
+    <div style="${style} max-width: 900px; margin: 0 auto; background: white; padding: 20px 0;">
+        
+        <!-- Logo Section -->
+        <div style="text-align: right; margin-bottom: 10px;">
+            <span style="color: #0056b3; font-weight: bold; font-size: 24px;">${logoText}</span><br>
+            <small style="font-size: 10px; color: #000;">${logoSubText}</small>
+        </div>
+
+        <!-- Top Line -->
+        <hr style="border: 0; border-top: 2px solid black; margin: 5px 0;">
+
+        <!-- Header Box (Course & Series) -->
+        ${isWord ? `
+        <!-- Word Compatible Table for Header Box -->
+        <table style="width: 100%; border: 2px solid black; border-collapse: collapse; margin-top: 5px; font-family: ${fontFamily};">
+            <tr>
+                <td style="padding: 5px 10px; font-weight: bold; font-size: 18px; vertical-align: middle;">
+                    ${courseName}
+                </td>
+                <td style="padding: 5px 10px; text-align: right; font-weight: bold; font-size: 18px; vertical-align: middle;">
+                    ${seriesName}<br>
+                    <span style="font-size: 16px;">${marksTime}</span>
+                </td>
+            </tr>
+        </table>
+        ` : `
+        <!-- Web/Print Flexbox -->
+        <div style="border: 2px solid black; padding: 5px 10px; display: flex; justify-content: space-between; align-items: center; font-weight: bold; font-size: 18px;">
+            <div>${courseName}</div>
+            <div style="text-align: right;">
+                ${seriesName}<br>
+                <span style="font-size: 16px;">${marksTime}</span>
+            </div>
+        </div>
+        `}
+
+        <!-- Subject Bar -->
+        <div style="background-color: black; color: white; text-align: center; padding: 8px; font-size: 20px; font-weight: bold; letter-spacing: 2px; margin-top: 15px;">
+            ${subjectTitle}
+        </div>
+
+        <!-- Instructions -->
+        <div style="text-align: center; margin-top: 15px; line-height: 1.6; color: black;">
+            <span style="font-size: 22px; font-weight: bold; display: block; margin-bottom: 5px;">${instruction1}</span>
+            <span style="font-size: 18px; font-weight: bold;">${instruction2}</span>
+        </div>
+
+        <!-- Bottom Line -->
+        <hr style="border: 0; border-top: 1.5px solid black; margin-top: 15px;">
+    </div>
+    `;
+  };
+
   const handleDownloadAll = () => {
     const completedJobs = jobs.filter(j => j.status === JobStatus.COMPLETED && j.resultHtml);
     if (completedJobs.length === 0) return;
 
-    // Construct a single HTML file with print breaks
+    const headerHtml = generateHeaderHtml(false);
+    const selectedFont = headerConfig.fontFamily;
+
     const fullHtml = `
 <!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Generated Documents</title>
+    <title>${headerConfig.subjectTitle}</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <style>
+        /* FORCE SELECTED FONT EVERYWHERE */
+        body, .page-wrapper, .page-wrapper * {
+            font-family: ${selectedFont} !important;
+        }
+
         @media print {
             .page-break { page-break-after: always; break-after: page; display: block; height: 0; }
             body { margin: 0; padding: 0; }
@@ -221,15 +354,15 @@ const App: React.FC = () => {
     </style>
 </head>
 <body class="bg-gray-100 print:bg-white">
-    ${completedJobs.map(job => `
+    ${completedJobs.map((job, index) => `
     <div class="page-wrapper print-container">
+        ${index === 0 ? headerHtml : ''}
         ${job.resultHtml}
     </div>
     <div class="page-break"></div>
     `).join('')}
     
     <script>
-      // Automatically prompt print when opened
       window.onload = function() {
         setTimeout(() => {
            window.print();
@@ -254,34 +387,36 @@ const App: React.FC = () => {
     const completedJobs = jobs.filter(j => j.status === JobStatus.COMPLETED && j.resultHtml);
     if (completedJobs.length === 0) return;
 
-    // MS Word requires specific XML namespaces and structure to render HTML correctly as a .doc file.
-    // NOTE: MS Word does not execute JavaScript, so the Tailwind CDN script won't run. 
-    // That is why the Gemini Prompt now requests inline styles as well.
+    const selectedFont = headerConfig.fontFamily;
+
     const preHtml = `<html xmlns:o='urn:schemas-microsoft-com:office:office' xmlns:w='urn:schemas-microsoft-com:office:word' xmlns='http://www.w3.org/TR/REC-html40'><head><meta charset='utf-8'><title>Export HTML To Doc</title>
-    <!-- Basic Reset for Word -->
     <style>
-      body { font-family: Arial, sans-serif; }
-      table { border-collapse: collapse; width: 100%; }
-      td, th { border: 1px solid #ddd; padding: 8px; }
+      body { font-family: ${selectedFont}; }
+      table { border-collapse: collapse; width: 100%; font-family: ${selectedFont}; }
+      td, th { border: 1px solid #ddd; padding: 8px; font-family: ${selectedFont}; }
       .page-break { page-break-after: always; }
+      /* Try to enforce font on all elements */
+      * { font-family: ${selectedFont}; }
     </style>
     </head><body>`;
     
     const postHtml = "</body></html>";
-    
-    // Word specific page break
     const wordPageBreak = "<br clear=all style='mso-special-character:line-break;page-break-before:always'>";
 
+    const headerHtml = generateHeaderHtml(true);
+
     const innerContent = completedJobs.map((job, index) => `
-      <div class="WordSection">
-        ${job.resultHtml}
+      <div class="WordSection" style="font-family: ${selectedFont};">
+        ${index === 0 ? headerHtml : ''}
+        <div style="font-family: ${selectedFont};">
+           ${job.resultHtml}
+        </div>
       </div>
       ${index < completedJobs.length - 1 ? wordPageBreak : ''}
     `).join('');
 
     const html = preHtml + innerContent + postHtml;
 
-    // Create a Blob with the specific MIME type for Word
     const blob = new Blob(['\ufeff', html], {
         type: 'application/msword'
     });
@@ -289,7 +424,7 @@ const App: React.FC = () => {
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = 'document.doc'; // .doc extension forces Word to open it
+    a.download = 'document.doc';
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
@@ -297,7 +432,6 @@ const App: React.FC = () => {
   };
 
   const completedCount = jobs.filter(j => j.status === JobStatus.COMPLETED).length;
-
   const croppingJob = jobs.find(j => j.id === croppingJobId);
 
   return (
@@ -376,65 +510,190 @@ const App: React.FC = () => {
 
             {/* Right: Actions & Stats */}
             <div className="lg:col-span-1">
-              <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-6 sticky top-24">
-                <h3 className="font-semibold text-slate-800 mb-4">Actions</h3>
+              <div className="sticky top-24 space-y-6">
                 
-                <div className="space-y-3">
-                  <button
-                    onClick={handleProcessAll}
-                    disabled={isProcessing || jobs.every(j => j.status === JobStatus.COMPLETED)}
-                    className="w-full flex items-center justify-center gap-2 bg-slate-900 text-white py-3 px-4 rounded-lg font-medium hover:bg-slate-800 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-                  >
-                    {isProcessing ? (
-                      <>
-                        <Sparkles className="w-5 h-5 animate-pulse" />
-                        Processing...
-                      </>
-                    ) : (
-                      <>
-                        <Sparkles className="w-5 h-5 text-yellow-400" />
-                        Convert to HTML
-                      </>
-                    )}
-                  </button>
+                {/* Header Settings Section */}
+                <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-4">
+                    <h3 className="font-semibold text-slate-800 mb-3 flex items-center gap-2 pb-2 border-b border-slate-100">
+                        <FileType className="w-4 h-4 text-brand-600" />
+                        Header Configuration
+                    </h3>
+                    
+                    <div className="space-y-3 mt-3">
+                        {/* Font Selection */}
+                        <div className="bg-slate-50 p-2 rounded border border-slate-200 mb-2">
+                           <label className="block text-xs font-bold text-slate-700 mb-1 flex items-center gap-1">
+                             <Type className="w-3 h-3" /> Font Style
+                           </label>
+                           <select
+                              value={headerConfig.fontFamily}
+                              onChange={(e) => handleConfigChange('fontFamily', e.target.value)}
+                              className="w-full px-2 py-1.5 border border-slate-300 rounded text-sm focus:border-brand-500 outline-none bg-white"
+                           >
+                              {AVAILABLE_FONTS.map(f => (
+                                <option key={f.value} value={f.value}>{f.label}</option>
+                              ))}
+                           </select>
+                        </div>
 
-                  <div className="grid grid-cols-2 gap-2">
+                        <div>
+                            <label className="block text-xs font-semibold text-slate-500 mb-1">Logo Text (Top Right)</label>
+                            <input 
+                                type="text" 
+                                value={headerConfig.logoText}
+                                onChange={(e) => handleConfigChange('logoText', e.target.value)}
+                                className="w-full px-2 py-1.5 border border-slate-300 rounded text-sm focus:border-brand-500 outline-none"
+                            />
+                        </div>
+                        <div>
+                            <label className="block text-xs font-semibold text-slate-500 mb-1">Logo Sub-Text</label>
+                            <input 
+                                type="text" 
+                                value={headerConfig.logoSubText}
+                                onChange={(e) => handleConfigChange('logoSubText', e.target.value)}
+                                className="w-full px-2 py-1.5 border border-slate-300 rounded text-sm focus:border-brand-500 outline-none"
+                            />
+                        </div>
+                        
+                        <div className="grid grid-cols-2 gap-2">
+                             <div>
+                                <label className="block text-xs font-semibold text-slate-500 mb-1">Course Name</label>
+                                <input 
+                                    type="text" 
+                                    value={headerConfig.courseName}
+                                    onChange={(e) => handleConfigChange('courseName', e.target.value)}
+                                    className="w-full px-2 py-1.5 border border-slate-300 rounded text-sm focus:border-brand-500 outline-none"
+                                />
+                            </div>
+                            <div>
+                                <label className="block text-xs font-semibold text-slate-500 mb-1">Series Info</label>
+                                <input 
+                                    type="text" 
+                                    value={headerConfig.seriesName}
+                                    onChange={(e) => handleConfigChange('seriesName', e.target.value)}
+                                    className="w-full px-2 py-1.5 border border-slate-300 rounded text-sm focus:border-brand-500 outline-none"
+                                />
+                            </div>
+                        </div>
+
+                        <div>
+                            <label className="block text-xs font-semibold text-slate-500 mb-1">Marks & Time</label>
+                            <input 
+                                type="text" 
+                                value={headerConfig.marksTime}
+                                onChange={(e) => handleConfigChange('marksTime', e.target.value)}
+                                className="w-full px-2 py-1.5 border border-slate-300 rounded text-sm focus:border-brand-500 outline-none"
+                            />
+                        </div>
+
+                        <div className="pt-2 border-t border-slate-100">
+                             <label className="block text-xs font-bold text-slate-800 mb-1">SUBJECT / PAPER TITLE</label>
+                            <input 
+                                type="text" 
+                                value={headerConfig.subjectTitle}
+                                onChange={(e) => handleConfigChange('subjectTitle', e.target.value)}
+                                className="w-full px-2 py-2 border border-slate-300 rounded text-sm font-bold bg-slate-50 focus:border-brand-500 outline-none"
+                            />
+                        </div>
+
+                        <div className="pt-2 border-t border-slate-100">
+                            <label className="block text-xs font-semibold text-slate-500 mb-1">Instruction 1 (Bold)</label>
+                            <input 
+                                type="text" 
+                                value={headerConfig.instruction1}
+                                onChange={(e) => handleConfigChange('instruction1', e.target.value)}
+                                className="w-full px-2 py-1.5 border border-slate-300 rounded text-sm focus:border-brand-500 outline-none"
+                            />
+                            <label className="block text-xs font-semibold text-slate-500 mt-2 mb-1">Instruction 2</label>
+                            <textarea 
+                                value={headerConfig.instruction2}
+                                onChange={(e) => handleConfigChange('instruction2', e.target.value)}
+                                rows={2}
+                                className="w-full px-2 py-1.5 border border-slate-300 rounded text-sm focus:border-brand-500 outline-none resize-none"
+                            />
+                        </div>
+                    </div>
+                </div>
+
+                {/* Actions Section */}
+                <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-6">
+                  <h3 className="font-semibold text-slate-800 mb-4">Actions</h3>
+                  
+                  <div className="space-y-3">
                     <button
-                      onClick={handleDownloadAll}
-                      disabled={completedCount === 0}
-                      className="col-span-1 flex flex-col items-center justify-center gap-1 bg-brand-50 text-brand-700 border border-brand-200 py-2 px-2 rounded-lg text-sm font-medium hover:bg-brand-100 disabled:opacity-50 disabled:cursor-not-allowed transition-colors h-20"
+                      onClick={handleProcessAll}
+                      disabled={isProcessing || isRemixing || jobs.every(j => j.status === JobStatus.COMPLETED)}
+                      className="w-full flex items-center justify-center gap-2 bg-slate-900 text-white py-3 px-4 rounded-lg font-medium hover:bg-slate-800 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
                     >
-                      <Download className="w-5 h-5" />
-                      <span>Printable HTML</span>
+                      {isProcessing ? (
+                        <>
+                          <Sparkles className="w-5 h-5 animate-pulse" />
+                          Processing...
+                        </>
+                      ) : (
+                        <>
+                          <Sparkles className="w-5 h-5 text-yellow-400" />
+                          Convert to HTML
+                        </>
+                      )}
                     </button>
 
                     <button
-                      onClick={handleDownloadWord}
-                      disabled={completedCount === 0}
-                      className="col-span-1 flex flex-col items-center justify-center gap-1 bg-blue-50 text-blue-700 border border-blue-200 py-2 px-2 rounded-lg text-sm font-medium hover:bg-blue-100 disabled:opacity-50 disabled:cursor-not-allowed transition-colors h-20"
+                      onClick={handleRemixAll}
+                      disabled={isProcessing || isRemixing || completedCount === 0}
+                      className="w-full flex items-center justify-center gap-2 bg-purple-600 text-white py-3 px-4 rounded-lg font-medium hover:bg-purple-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
                     >
-                      <FileText className="w-5 h-5" />
-                      <span>Word File</span>
+                      {isRemixing ? (
+                        <>
+                          <Shuffle className="w-5 h-5 animate-spin" />
+                          Remixing Questions...
+                        </>
+                      ) : (
+                        <>
+                          <Shuffle className="w-5 h-5" />
+                          Shuffle / Remix Questions
+                        </>
+                      )}
                     </button>
-                  </div>
-                </div>
 
-                <div className="mt-6 pt-6 border-t border-slate-100">
-                  <div className="flex items-start gap-3">
-                    <AlertTriangle className="w-5 h-5 text-amber-500 flex-shrink-0 mt-0.5" />
-                    <p className="text-xs text-slate-500 leading-relaxed">
-                      <strong>Tip:</strong> Word download uses inline styles. For perfect layout, use the Printable HTML option.
-                    </p>
-                  </div>
-                </div>
+                    <div className="grid grid-cols-2 gap-2">
+                      <button
+                        onClick={handleDownloadAll}
+                        disabled={completedCount === 0}
+                        className="col-span-1 flex flex-col items-center justify-center gap-1 bg-brand-50 text-brand-700 border border-brand-200 py-2 px-2 rounded-lg text-sm font-medium hover:bg-brand-100 disabled:opacity-50 disabled:cursor-not-allowed transition-colors h-20"
+                      >
+                        <Download className="w-5 h-5" />
+                        <span>Printable HTML</span>
+                      </button>
 
-                {completedCount > 0 && (
-                  <div className="mt-4 text-center">
-                    <span className="text-sm font-medium text-green-600 bg-green-50 px-3 py-1 rounded-full">
-                      {completedCount} / {jobs.length} Completed
-                    </span>
+                      <button
+                        onClick={handleDownloadWord}
+                        disabled={completedCount === 0}
+                        className="col-span-1 flex flex-col items-center justify-center gap-1 bg-blue-50 text-blue-700 border border-blue-200 py-2 px-2 rounded-lg text-sm font-medium hover:bg-blue-100 disabled:opacity-50 disabled:cursor-not-allowed transition-colors h-20"
+                      >
+                        <FileText className="w-5 h-5" />
+                        <span>Word File</span>
+                      </button>
+                    </div>
                   </div>
-                )}
+
+                  <div className="mt-6 pt-6 border-t border-slate-100">
+                    <div className="flex items-start gap-3">
+                      <AlertTriangle className="w-5 h-5 text-amber-500 flex-shrink-0 mt-0.5" />
+                      <p className="text-xs text-slate-500 leading-relaxed">
+                        <strong>Tip:</strong> Word download uses inline styles. For perfect layout, use the Printable HTML option.
+                      </p>
+                    </div>
+                  </div>
+
+                  {completedCount > 0 && (
+                    <div className="mt-4 text-center">
+                      <span className="text-sm font-medium text-green-600 bg-green-50 px-3 py-1 rounded-full">
+                        {completedCount} / {jobs.length} Completed
+                      </span>
+                    </div>
+                  )}
+                </div>
               </div>
             </div>
           </div>
