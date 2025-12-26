@@ -43,6 +43,30 @@ Your task is to **CREATE A NEW VERSION** of this test paper by changing the ques
 * Do NOT include markdown formatting.
 `;
 
+const SOLUTION_PROMPT = `
+You are an expert Professor and Tutor.
+I will provide you with HTML code containing exam questions.
+Your task is to generate a **Detailed Solution Key** for these questions.
+
+**Instructions:**
+1. **Parse**: Read the questions from the provided HTML.
+2. **Format**: For EACH question found:
+   - **Question**: Copy the question text exactly as is. Display it in **Bold**.
+   - **Answer**: Immediately below the question, provide a detailed, step-by-step solution.
+   - **Style**: Use Tailwind CSS and inline styles. 
+     - Wrap the Question in a <div> with background color #f3f4f6 (gray-100) and padding.
+     - Wrap the Answer in a <div> with padding and clear typography.
+     - Use specific colors for the answer text (e.g., text-slate-800).
+     - If it is a Math problem, show calculations.
+     - If it is code, explain the logic.
+   - Add a separator <hr> between questions.
+
+**Output Rules:**
+* Return ONLY the HTML code for the solution body.
+* Do NOT return markdown.
+* The output should be print-ready.
+`;
+
 /**
  * Resizes and compresses an image file to reduce payload size and speed up API processing.
  * Max dimension: 1536px (enough for A4 clarity)
@@ -232,6 +256,43 @@ export const remixHtmlContent = async (html: string): Promise<string> => {
     return text;
   } catch (error: any) {
     console.error("Gemini API Error (Remix):", error);
+    const message = error.message || String(error);
+    if (message.includes("429")) {
+        throw new Error("Too many requests (429). Please wait a moment and retry.");
+    }
+    throw new Error(message);
+  }
+};
+
+export const generateSolutionFromHtml = async (html: string): Promise<string> => {
+  let apiKey: string;
+  try {
+    apiKey = getApiKey();
+  } catch (e: any) {
+    throw new Error(e.message);
+  }
+
+  const ai = new GoogleGenAI({ apiKey });
+
+  try {
+    const response = await ai.models.generateContent({
+      model: 'gemini-3-flash-preview',
+      contents: {
+        role: 'user',
+        parts: [{ text: `Here is the questions HTML:\n\n${html}` }]
+      },
+      config: {
+        systemInstruction: SOLUTION_PROMPT,
+        temperature: 0.4, // Balanced for factual accuracy and good explanation
+      }
+    });
+
+    let text = response.text || "";
+    text = text.replace(/```html/g, '').replace(/```/g, '').trim();
+
+    return text;
+  } catch (error: any) {
+    console.error("Gemini API Error (Solution):", error);
     const message = error.message || String(error);
     if (message.includes("429")) {
         throw new Error("Too many requests (429). Please wait a moment and retry.");

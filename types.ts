@@ -11,6 +11,7 @@ export interface ImageJob {
   previewUrl: string;
   status: JobStatus;
   resultHtml?: string;
+  solutionHtml?: string; // Stores the AI generated detailed solution
   error?: string;
 }
 

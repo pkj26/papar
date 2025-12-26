@@ -1,7 +1,7 @@
 import React, { useState, useCallback, useRef, useEffect } from 'react';
-import { Upload, Printer, Download, Sparkles, AlertTriangle, ClipboardPaste, Users, FileText, Shuffle, FileType, Trash2, Type, Eye } from 'lucide-react';
+import { Upload, Printer, Download, Sparkles, AlertTriangle, ClipboardPaste, Users, FileText, Shuffle, FileType, Trash2, Type, Eye, BrainCircuit, FileCheck } from 'lucide-react';
 import { ImageJob, JobStatus } from './types';
-import { generateHtmlFromImage, remixHtmlContent, fileToGenerativePart } from './services/geminiService';
+import { generateHtmlFromImage, remixHtmlContent, generateSolutionFromHtml, fileToGenerativePart } from './services/geminiService';
 import { JobItem } from './components/JobItem';
 import { PreviewModal } from './components/PreviewModal';
 import { CropModal } from './components/CropModal';
@@ -44,6 +44,7 @@ const App: React.FC = () => {
   const [jobs, setJobs] = useState<ImageJob[]>([]);
   const [isProcessing, setIsProcessing] = useState(false);
   const [isRemixing, setIsRemixing] = useState(false);
+  const [isSolving, setIsSolving] = useState(false);
   
   // Track specific job preview ID, OR 'GLOBAL' for the full document
   const [previewJobId, setPreviewJobId] = useState<string | null>(null);
@@ -181,6 +182,7 @@ const App: React.FC = () => {
           previewUrl: URL.createObjectURL(croppedFile),
           status: JobStatus.IDLE, 
           resultHtml: undefined,
+          solutionHtml: undefined,
           error: undefined
         };
       }
@@ -247,7 +249,7 @@ const App: React.FC = () => {
         const remixedHtml = await remixHtmlContent(job.resultHtml!);
         setJobs(prev => prev.map(j => 
           j.id === job.id 
-            ? { ...j, status: JobStatus.COMPLETED, resultHtml: remixedHtml } 
+            ? { ...j, status: JobStatus.COMPLETED, resultHtml: remixedHtml, solutionHtml: undefined } 
             : j
         ));
       } catch (e) {
@@ -260,6 +262,36 @@ const App: React.FC = () => {
     setGlobalEditedHtml(null); // Reset global edit
   };
 
+  const handleSolveAll = async () => {
+    setIsSolving(true);
+    const completedJobs = jobs.filter(j => j.status === JobStatus.COMPLETED && j.resultHtml);
+    
+    if (completedJobs.length === 0) {
+      setIsSolving(false);
+      return;
+    }
+
+    await Promise.all(completedJobs.map(async (job) => {
+      try {
+        // If solution already exists, skip unless forced? For now, re-generate.
+        setJobs(prev => prev.map(j => j.id === job.id ? { ...j, status: JobStatus.PROCESSING } : j));
+        const solutionHtml = await generateSolutionFromHtml(job.resultHtml!);
+        setJobs(prev => prev.map(j => 
+          j.id === job.id 
+            ? { ...j, status: JobStatus.COMPLETED, solutionHtml: solutionHtml } 
+            : j
+        ));
+      } catch (e) {
+        console.error("Solution generation failed for job", job.id, e);
+        // Fallback status to COMPLETED so it doesn't stay stuck
+        setJobs(prev => prev.map(j => j.id === job.id ? { ...j, status: JobStatus.COMPLETED } : j));
+      }
+    }));
+
+    setIsSolving(false);
+  };
+
+
   // Function to save edited HTML from Preview Modal
   const handleUpdateJobHtml = (id: string, newHtml: string) => {
     if (id === 'GLOBAL') {
@@ -271,13 +303,12 @@ const App: React.FC = () => {
 
     setJobs(prev => prev.map(j => 
         j.id === id 
-        ? { ...j, resultHtml: newHtml } 
+        ? { ...j, resultHtml: newHtml, solutionHtml: undefined } // clear solution if question changes
         : j
     ));
     setPreviewJobId(null);
     setPreviewContent(null);
-    // If individual job is updated, global edit is likely invalid/stale, but maybe let's keep it until they regenerate?
-    // Safer to reset global to force regeneration from new parts.
+    // If individual job is updated, global edit is likely invalid/stale
     setGlobalEditedHtml(null);
   };
 
@@ -290,13 +321,16 @@ const App: React.FC = () => {
   };
 
   // Fixed Template Generation function
-  const generateHeaderHtml = (isWord: boolean) => {
+  const generateHeaderHtml = (isWord: boolean, isSolution: boolean = false) => {
     if (!headerConfig.enabled) {
         return '';
     }
 
     const { logoText, logoSubText, courseName, seriesName, marksTime, subjectTitle, instruction1, instruction2, fontFamily } = headerConfig;
     const style = `font-family: ${fontFamily};`;
+    
+    // Append SOLUTIONS to subject title if it is a solution document
+    const finalSubjectTitle = isSolution ? `${subjectTitle} (SOLUTIONS)` : subjectTitle;
 
     return `
     <div style="${style} max-width: 900px; margin: 0 auto; background: white; padding: 20px 0;">
@@ -327,12 +361,14 @@ const App: React.FC = () => {
         </div>
         `}
         <div style="background-color: black; color: white; text-align: center; padding: 8px; font-size: 20px; font-weight: bold; letter-spacing: 2px; margin-top: 15px;">
-            ${subjectTitle}
+            ${finalSubjectTitle}
         </div>
+        ${!isSolution ? `
         <div style="text-align: center; margin-top: 15px; line-height: 1.6; color: black;">
             <span style="font-size: 22px; font-weight: bold; display: block; margin-bottom: 5px;">${instruction1}</span>
             <span style="font-size: 18px; font-weight: bold;">${instruction2}</span>
         </div>
+        ` : ''}
         <hr style="border: 0; border-top: 1.5px solid black; margin-top: 15px;">
     </div>
     `;
@@ -540,7 +576,53 @@ const App: React.FC = () => {
     }
   };
 
+  const handleDownloadSolutionPdf = () => {
+    const completedJobs = jobs.filter(j => j.status === JobStatus.COMPLETED && j.solutionHtml);
+    if (completedJobs.length === 0) return;
+
+    const headerHtml = generateHeaderHtml(false, true); // true for isSolution
+    const selectedFont = headerConfig.fontFamily;
+    const isHeaderEnabled = headerConfig.enabled;
+
+    // Aggregate solutions
+    const bodyContent = completedJobs.map((job, index) => `
+    <div class="page-break-wrapper" style="break-after: page; page-break-after: always; margin-bottom: 30px;">
+        ${index === 0 ? headerHtml : ''}
+        <div style="${isHeaderEnabled ? `font-family: ${selectedFont};` : ''}">
+            ${job.solutionHtml}
+        </div>
+    </div>
+    `).join('');
+
+    const element = document.createElement('div');
+    element.style.width = '210mm'; 
+    element.style.padding = '10mm';
+    element.style.backgroundColor = 'white';
+    if (isHeaderEnabled) {
+       element.style.fontFamily = selectedFont;
+    }
+    
+    element.innerHTML = bodyContent;
+
+    const opt = {
+      margin: 10,
+      filename: 'solutions.pdf',
+      image: { type: 'jpeg', quality: 0.98 },
+      html2canvas: { scale: 2, useCORS: true },
+      jsPDF: { unit: 'mm', format: 'a4', orientation: 'portrait' }
+    };
+
+    // @ts-ignore
+    if (window.html2pdf) {
+        // @ts-ignore
+        window.html2pdf().set(opt).from(element).save();
+    } else {
+        alert("PDF Generator is loading. Please try again in 3 seconds.");
+    }
+  };
+
   const completedCount = jobs.filter(j => j.status === JobStatus.COMPLETED).length;
+  const solutionsCount = jobs.filter(j => j.status === JobStatus.COMPLETED && j.solutionHtml).length;
   const croppingJob = jobs.find(j => j.id === croppingJobId);
 
   return (
@@ -740,7 +822,7 @@ const App: React.FC = () => {
                   <div className="space-y-3">
                     <button
                       onClick={handleProcessAll}
-                      disabled={isProcessing || isRemixing || jobs.every(j => j.status === JobStatus.COMPLETED)}
+                      disabled={isProcessing || isRemixing || isSolving || jobs.every(j => j.status === JobStatus.COMPLETED)}
                       className="w-full flex items-center justify-center gap-2 bg-slate-900 text-white py-3 px-4 rounded-lg font-medium hover:bg-slate-800 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
                     >
                       {isProcessing ? (
@@ -758,7 +840,7 @@ const App: React.FC = () => {
 
                     <button
                       onClick={handleRemixAll}
-                      disabled={isProcessing || isRemixing || completedCount === 0}
+                      disabled={isProcessing || isRemixing || isSolving || completedCount === 0}
                       className="w-full flex items-center justify-center gap-2 bg-purple-600 text-white py-3 px-4 rounded-lg font-medium hover:bg-purple-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
                     >
                       {isRemixing ? (
@@ -775,6 +857,24 @@ const App: React.FC = () => {
                     </button>
 
                     <button
+                      onClick={handleSolveAll}
+                      disabled={isProcessing || isRemixing || isSolving || completedCount === 0}
+                      className="w-full flex items-center justify-center gap-2 bg-indigo-600 text-white py-3 px-4 rounded-lg font-medium hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                    >
+                      {isSolving ? (
+                        <>
+                          <BrainCircuit className="w-5 h-5 animate-pulse" />
+                          Solving Questions...
+                        </>
+                      ) : (
+                        <>
+                          <BrainCircuit className="w-5 h-5" />
+                          Generate Solutions
+                        </>
+                      )}
+                    </button>
+
+                    <button
                       onClick={handleOpenGlobalPreview}
                       disabled={completedCount === 0}
                       className="w-full flex items-center justify-center gap-2 bg-teal-600 text-white py-3 px-4 rounded-lg font-medium hover:bg-teal-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
@@ -783,11 +883,11 @@ const App: React.FC = () => {
                         Preview Full Document
                     </button>
 
-                    <div className="grid grid-cols-3 gap-2">
+                    <div className="grid grid-cols-2 gap-2">
                       <button
                         onClick={handleDownloadAll}
                         disabled={completedCount === 0}
-                        className="col-span-1 flex flex-col items-center justify-center gap-1 bg-brand-50 text-brand-700 border border-brand-200 py-2 px-1 rounded-lg text-xs font-medium hover:bg-brand-100 disabled:opacity-50 disabled:cursor-not-allowed transition-colors h-20 text-center"
+                        className="col-span-1 flex flex-col items-center justify-center gap-1 bg-brand-50 text-brand-700 border border-brand-200 py-2 px-1 rounded-lg text-xs font-medium hover:bg-brand-100 disabled:opacity-50 disabled:cursor-not-allowed transition-colors h-16 text-center"
                       >
                         <Printer className="w-5 h-5" />
                         <span>Print/HTML</span>
@@ -796,7 +896,7 @@ const App: React.FC = () => {
                        <button
                         onClick={handleDownloadPdf}
                         disabled={completedCount === 0}
-                        className="col-span-1 flex flex-col items-center justify-center gap-1 bg-red-50 text-red-700 border border-red-200 py-2 px-1 rounded-lg text-xs font-medium hover:bg-red-100 disabled:opacity-50 disabled:cursor-not-allowed transition-colors h-20 text-center"
+                        className="col-span-1 flex flex-col items-center justify-center gap-1 bg-red-50 text-red-700 border border-red-200 py-2 px-1 rounded-lg text-xs font-medium hover:bg-red-100 disabled:opacity-50 disabled:cursor-not-allowed transition-colors h-16 text-center"
                       >
                         <Download className="w-5 h-5" />
                         <span>PDF</span>
@@ -805,10 +905,19 @@ const App: React.FC = () => {
                       <button
                         onClick={handleDownloadWord}
                         disabled={completedCount === 0}
-                        className="col-span-1 flex flex-col items-center justify-center gap-1 bg-blue-50 text-blue-700 border border-blue-200 py-2 px-1 rounded-lg text-xs font-medium hover:bg-blue-100 disabled:opacity-50 disabled:cursor-not-allowed transition-colors h-20 text-center"
+                        className="col-span-1 flex flex-col items-center justify-center gap-1 bg-blue-50 text-blue-700 border border-blue-200 py-2 px-1 rounded-lg text-xs font-medium hover:bg-blue-100 disabled:opacity-50 disabled:cursor-not-allowed transition-colors h-16 text-center"
                       >
                         <FileText className="w-5 h-5" />
                         <span>Word</span>
+                      </button>
+
+                      <button
+                        onClick={handleDownloadSolutionPdf}
+                        disabled={solutionsCount === 0}
+                        className="col-span-1 flex flex-col items-center justify-center gap-1 bg-green-50 text-green-700 border border-green-200 py-2 px-1 rounded-lg text-xs font-medium hover:bg-green-100 disabled:opacity-50 disabled:cursor-not-allowed transition-colors h-16 text-center"
+                      >
+                        <FileCheck className="w-5 h-5" />
+                        <span>Solution PDF</span>
                       </button>
                     </div>
                   </div>
@@ -817,7 +926,7 @@ const App: React.FC = () => {
                     <div className="flex items-start gap-3">
                       <AlertTriangle className="w-5 h-5 text-amber-500 flex-shrink-0 mt-0.5" />
                       <p className="text-xs text-slate-500 leading-relaxed">
-                        <strong>Tip:</strong> Click "Preview Full Document" to see and edit the final output (Header + All Pages) before downloading.
+                        <strong>Tip:</strong> Click "Generate Solutions" to let AI solve your questions, then download the Solution PDF separately.
                       </p>
                     </div>
                   </div>
