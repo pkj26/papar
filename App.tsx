@@ -1,5 +1,5 @@
 import React, { useState, useCallback, useRef, useEffect } from 'react';
-import { Upload, Printer, Download, Sparkles, AlertTriangle, ClipboardPaste, Users, FileText, Shuffle, FileType, Trash2, Type } from 'lucide-react';
+import { Upload, Printer, Download, Sparkles, AlertTriangle, ClipboardPaste, Users, FileText, Shuffle, FileType, Trash2, Type, Eye } from 'lucide-react';
 import { ImageJob, JobStatus } from './types';
 import { generateHtmlFromImage, remixHtmlContent, fileToGenerativePart } from './services/geminiService';
 import { JobItem } from './components/JobItem';
@@ -44,7 +44,14 @@ const App: React.FC = () => {
   const [jobs, setJobs] = useState<ImageJob[]>([]);
   const [isProcessing, setIsProcessing] = useState(false);
   const [isRemixing, setIsRemixing] = useState(false);
-  const [previewHtml, setPreviewHtml] = useState<string | null>(null);
+  
+  // Track specific job preview ID, OR 'GLOBAL' for the full document
+  const [previewJobId, setPreviewJobId] = useState<string | null>(null);
+  const [previewContent, setPreviewContent] = useState<string | null>(null);
+
+  // If the user edits the FULL document, we store it here to use for downloads
+  const [globalEditedHtml, setGlobalEditedHtml] = useState<string | null>(null);
+
   const [visitCount, setVisitCount] = useState<number | null>(null);
   
   // Header Settings State (Structured)
@@ -71,6 +78,8 @@ const App: React.FC = () => {
     const newConfig = { ...headerConfig, [key]: value };
     setHeaderConfig(newConfig);
     localStorage.setItem('snap2print_header_config', JSON.stringify(newConfig));
+    // If config changes, reset global edit because the header changed
+    setGlobalEditedHtml(null);
   };
 
   // Visitor Counter
@@ -96,6 +105,8 @@ const App: React.FC = () => {
       status: JobStatus.IDLE
     }));
     setJobs(prev => [...prev, ...newJobs]);
+    // Reset global edit when files change
+    setGlobalEditedHtml(null);
   }, []);
 
   // Handle file selection from input
@@ -150,6 +161,7 @@ const App: React.FC = () => {
       if (job) URL.revokeObjectURL(job.previewUrl);
       return prev.filter(job => job.id !== id);
     });
+    setGlobalEditedHtml(null);
   };
 
   // Cropping Handlers
@@ -175,6 +187,7 @@ const App: React.FC = () => {
       return job;
     }));
     setCroppingJobId(null);
+    setGlobalEditedHtml(null);
   };
 
   const processJob = async (job: ImageJob) => {
@@ -212,11 +225,11 @@ const App: React.FC = () => {
       return;
     }
 
-    // Execute all jobs in parallel using Promise.all
-    // This is much faster than the previous sequential loop
+    // Execute all jobs in parallel
     await Promise.all(jobsToProcess.map(job => processJob(job)));
 
     setIsProcessing(false);
+    setGlobalEditedHtml(null); // Reset global edit as content changed
   };
 
   const handleRemixAll = async () => {
@@ -228,7 +241,6 @@ const App: React.FC = () => {
       return;
     }
 
-    // Also parallelize remixing
     await Promise.all(completedJobs.map(async (job) => {
       try {
         setJobs(prev => prev.map(j => j.id === job.id ? { ...j, status: JobStatus.PROCESSING } : j));
@@ -240,41 +252,60 @@ const App: React.FC = () => {
         ));
       } catch (e) {
         console.error("Remix failed for job", job.id, e);
-        // Revert status to COMPLETED if failed, so it's not stuck
         setJobs(prev => prev.map(j => j.id === job.id ? { ...j, status: JobStatus.COMPLETED } : j));
       }
     }));
 
     setIsRemixing(false);
+    setGlobalEditedHtml(null); // Reset global edit
+  };
+
+  // Function to save edited HTML from Preview Modal
+  const handleUpdateJobHtml = (id: string, newHtml: string) => {
+    if (id === 'GLOBAL') {
+        setGlobalEditedHtml(newHtml);
+        setPreviewJobId(null);
+        setPreviewContent(null);
+        return;
+    }
+
+    setJobs(prev => prev.map(j => 
+        j.id === id 
+        ? { ...j, resultHtml: newHtml } 
+        : j
+    ));
+    setPreviewJobId(null);
+    setPreviewContent(null);
+    // If individual job is updated, global edit is likely invalid/stale, but maybe let's keep it until they regenerate?
+    // Safer to reset global to force regeneration from new parts.
+    setGlobalEditedHtml(null);
+  };
+
+  const handleOpenPreview = (jobId: string) => {
+    const job = jobs.find(j => j.id === jobId);
+    if (job && job.resultHtml) {
+        setPreviewJobId(jobId);
+        setPreviewContent(job.resultHtml);
+    }
   };
 
   // Fixed Template Generation function
   const generateHeaderHtml = (isWord: boolean) => {
-    // If not enabled, return empty string immediately
     if (!headerConfig.enabled) {
         return '';
     }
 
     const { logoText, logoSubText, courseName, seriesName, marksTime, subjectTitle, instruction1, instruction2, fontFamily } = headerConfig;
-    
-    // Use the selected font family for the header content
     const style = `font-family: ${fontFamily};`;
 
     return `
     <div style="${style} max-width: 900px; margin: 0 auto; background: white; padding: 20px 0;">
-        
-        <!-- Logo Section -->
         <div style="text-align: right; margin-bottom: 10px;">
             <span style="color: #0056b3; font-weight: bold; font-size: 24px;">${logoText}</span><br>
             <small style="font-size: 10px; color: #000;">${logoSubText}</small>
         </div>
-
-        <!-- Top Line -->
         <hr style="border: 0; border-top: 2px solid black; margin: 5px 0;">
-
-        <!-- Header Box (Course & Series) -->
         ${isWord ? `
-        <!-- Word Compatible Table for Header Box -->
         <table style="width: 100%; border: 2px solid black; border-collapse: collapse; margin-top: 5px; font-family: ${fontFamily};">
             <tr>
                 <td style="padding: 5px 10px; font-weight: bold; font-size: 18px; vertical-align: middle;">
@@ -287,7 +318,6 @@ const App: React.FC = () => {
             </tr>
         </table>
         ` : `
-        <!-- Web/Print Flexbox -->
         <div style="border: 2px solid black; padding: 5px 10px; display: flex; justify-content: space-between; align-items: center; font-weight: bold; font-size: 18px;">
             <div>${courseName}</div>
             <div style="text-align: right;">
@@ -296,35 +326,56 @@ const App: React.FC = () => {
             </div>
         </div>
         `}
-
-        <!-- Subject Bar -->
         <div style="background-color: black; color: white; text-align: center; padding: 8px; font-size: 20px; font-weight: bold; letter-spacing: 2px; margin-top: 15px;">
             ${subjectTitle}
         </div>
-
-        <!-- Instructions -->
         <div style="text-align: center; margin-top: 15px; line-height: 1.6; color: black;">
             <span style="font-size: 22px; font-weight: bold; display: block; margin-bottom: 5px;">${instruction1}</span>
             <span style="font-size: 18px; font-weight: bold;">${instruction2}</span>
         </div>
-
-        <!-- Bottom Line -->
         <hr style="border: 0; border-top: 1.5px solid black; margin-top: 15px;">
     </div>
     `;
+  };
+
+  const generateFullBodyContent = () => {
+    // Generates the raw HTML content (divs) without the <html> wrapper
+    const completedJobs = jobs.filter(j => j.status === JobStatus.COMPLETED && j.resultHtml);
+    if (completedJobs.length === 0) return '';
+
+    const headerHtml = generateHeaderHtml(false);
+    const selectedFont = headerConfig.fontFamily;
+    const isHeaderEnabled = headerConfig.enabled;
+
+    return completedJobs.map((job, index) => `
+    <div class="page-break-wrapper" style="break-after: page; page-break-after: always; margin-bottom: 30px;">
+        ${index === 0 ? headerHtml : ''}
+        <div style="${isHeaderEnabled ? `font-family: ${selectedFont};` : ''}">
+            ${job.resultHtml}
+        </div>
+    </div>
+    `).join('');
+  };
+
+  const handleOpenGlobalPreview = () => {
+    // If we have a saved edited version, use that. Otherwise generate fresh.
+    const content = globalEditedHtml || generateFullBodyContent();
+    if (content) {
+        setPreviewJobId('GLOBAL');
+        setPreviewContent(content);
+    }
   };
 
   const handleDownloadAll = () => {
     const completedJobs = jobs.filter(j => j.status === JobStatus.COMPLETED && j.resultHtml);
     if (completedJobs.length === 0) return;
 
-    const headerHtml = generateHeaderHtml(false);
+    // Use global override if exists, otherwise generate
+    const bodyContent = globalEditedHtml || generateFullBodyContent();
     const selectedFont = headerConfig.fontFamily;
     const isHeaderEnabled = headerConfig.enabled;
 
-    // Only apply global font styles if Header is Enabled
     const fontStyles = isHeaderEnabled ? `
-        /* FORCE SELECTED FONT EVERYWHERE */
         body, .page-wrapper, .page-wrapper * {
             font-family: ${selectedFont} !important;
         }
@@ -340,15 +391,14 @@ const App: React.FC = () => {
     <script src="https://cdn.tailwindcss.com"></script>
     <style>
         ${fontStyles}
-
         @media print {
-            .page-break { page-break-after: always; break-after: page; display: block; height: 0; }
+            .page-break-wrapper { break-after: page; page-break-after: always; }
             body { margin: 0; padding: 0; }
             .print-container { padding: 0; margin: 0; }
         }
         .page-wrapper {
             background: white;
-            min-height: 297mm; /* A4 height */
+            min-height: 297mm;
             padding: 20px;
             margin: 20px auto;
             box-shadow: 0 0 10px rgba(0,0,0,0.1);
@@ -358,20 +408,16 @@ const App: React.FC = () => {
             .page-wrapper {
                 box-shadow: none;
                 margin: 0;
-                padding: 0; /* Let the internal padding handle it, or reset */
+                padding: 0;
                 min-height: auto;
             }
         }
     </style>
 </head>
 <body class="bg-gray-100 print:bg-white">
-    ${completedJobs.map((job, index) => `
     <div class="page-wrapper print-container">
-        ${index === 0 ? headerHtml : ''}
-        ${job.resultHtml}
+       ${bodyContent}
     </div>
-    <div class="page-break"></div>
-    `).join('')}
     
     <script>
       window.onload = function() {
@@ -395,13 +441,16 @@ const App: React.FC = () => {
   };
 
   const handleDownloadWord = () => {
+    // Note: Word export is complex with global edits because styling is tricky.
+    // We will attempt to use the bodyContent, but if it has Tailwind classes, Word might ignore them.
+    // The Gemini service tries to add inline styles, so it should be okay.
+    
     const completedJobs = jobs.filter(j => j.status === JobStatus.COMPLETED && j.resultHtml);
     if (completedJobs.length === 0) return;
 
     const selectedFont = headerConfig.fontFamily;
     const isHeaderEnabled = headerConfig.enabled;
 
-    // Only apply global font styles if Header is Enabled
     const fontStyles = isHeaderEnabled ? `
       body { font-family: ${selectedFont}; }
       table { border-collapse: collapse; width: 100%; font-family: ${selectedFont}; }
@@ -413,6 +462,26 @@ const App: React.FC = () => {
       td, th { border: 1px solid #ddd; padding: 8px; }
     `;
 
+    // Use global edit or default generation
+    // For Word, we might need to regenerate if globalEdit used the web-specific structure, 
+    // but for simplicity we assume the user's edits are paramount.
+    let content = globalEditedHtml;
+    
+    if (!content) {
+        // Fallback to generating word-specific structure if no global edits
+        const wordPageBreak = "<br clear=all style='mso-special-character:line-break;page-break-before:always'>";
+        const headerHtml = generateHeaderHtml(true);
+        content = completedJobs.map((job, index) => `
+          <div class="WordSection" ${isHeaderEnabled ? `style="font-family: ${selectedFont};"` : ''}>
+            ${index === 0 ? headerHtml : ''}
+            <div ${isHeaderEnabled ? `style="font-family: ${selectedFont};"` : ''}>
+               ${job.resultHtml}
+            </div>
+          </div>
+          ${index < completedJobs.length - 1 ? wordPageBreak : ''}
+        `).join('');
+    }
+
     const preHtml = `<html xmlns:o='urn:schemas-microsoft-com:office:office' xmlns:w='urn:schemas-microsoft-com:office:word' xmlns='http://www.w3.org/TR/REC-html40'><head><meta charset='utf-8'><title>Export HTML To Doc</title>
     <style>
       ${fontStyles}
@@ -421,26 +490,9 @@ const App: React.FC = () => {
     </head><body>`;
     
     const postHtml = "</body></html>";
-    const wordPageBreak = "<br clear=all style='mso-special-character:line-break;page-break-before:always'>";
+    const html = preHtml + content + postHtml;
 
-    const headerHtml = generateHeaderHtml(true);
-
-    const innerContent = completedJobs.map((job, index) => `
-      <div class="WordSection" ${isHeaderEnabled ? `style="font-family: ${selectedFont};"` : ''}>
-        ${index === 0 ? headerHtml : ''}
-        <div ${isHeaderEnabled ? `style="font-family: ${selectedFont};"` : ''}>
-           ${job.resultHtml}
-        </div>
-      </div>
-      ${index < completedJobs.length - 1 ? wordPageBreak : ''}
-    `).join('');
-
-    const html = preHtml + innerContent + postHtml;
-
-    const blob = new Blob(['\ufeff', html], {
-        type: 'application/msword'
-    });
-    
+    const blob = new Blob(['\ufeff', html], { type: 'application/msword' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
@@ -455,33 +507,22 @@ const App: React.FC = () => {
     const completedJobs = jobs.filter(j => j.status === JobStatus.COMPLETED && j.resultHtml);
     if (completedJobs.length === 0) return;
 
-    const headerHtml = generateHeaderHtml(false);
+    // Use global override if exists
+    const bodyContent = globalEditedHtml || generateFullBodyContent();
     const selectedFont = headerConfig.fontFamily;
     const isHeaderEnabled = headerConfig.enabled;
 
-    // Create a temporary container
     const element = document.createElement('div');
-    element.style.width = '210mm'; // A4 Width
+    element.style.width = '210mm'; 
     element.style.padding = '10mm';
     element.style.backgroundColor = 'white';
     if (isHeaderEnabled) {
        element.style.fontFamily = selectedFont;
     }
     
-    // Construct HTML content
-    // Note: html2pdf renders what's in the DOM. We construct a single vertical list.
-    const content = completedJobs.map((job, index) => `
-        <div style="margin-bottom: 20px; page-break-after: always; ${isHeaderEnabled ? `font-family: ${selectedFont};` : ''}">
-             ${index === 0 ? headerHtml : ''}
-             <div style="${isHeaderEnabled ? `font-family: ${selectedFont};` : ''}">
-                ${job.resultHtml}
-             </div>
-        </div>
-    `).join('');
+    // Inject content
+    element.innerHTML = bodyContent;
 
-    element.innerHTML = content;
-
-    // Configuration for html2pdf
     const opt = {
       margin: 10,
       filename: 'document.pdf',
@@ -504,7 +545,6 @@ const App: React.FC = () => {
 
   return (
     <div className="min-h-screen flex flex-col bg-slate-50 text-slate-900 font-sans">
-      {/* Header */}
       <header className="bg-white border-b border-slate-200 sticky top-0 z-20">
         <div className="max-w-5xl mx-auto px-4 h-16 flex items-center justify-between">
           <div className="flex items-center gap-2">
@@ -522,8 +562,6 @@ const App: React.FC = () => {
       </header>
 
       <main className="flex-1 max-w-5xl mx-auto px-4 py-8 w-full">
-        
-        {/* Intro / Empty State */}
         {jobs.length === 0 && (
           <div className="text-center py-16 border-2 border-dashed border-slate-300 rounded-2xl bg-slate-50/50">
             <div className="w-16 h-16 bg-blue-50 text-brand-600 rounded-full flex items-center justify-center mx-auto mb-4">
@@ -532,7 +570,6 @@ const App: React.FC = () => {
             <h2 className="text-2xl font-bold text-slate-800 mb-2">Paste images or Upload</h2>
             <p className="text-slate-500 max-w-md mx-auto mb-8">
               Press <span className="font-mono bg-slate-200 px-1 rounded">Ctrl+V</span> to paste images directly, or click below to upload.
-              You can crop images before converting.
             </p>
             <button 
               onClick={() => fileInputRef.current?.click()}
@@ -544,11 +581,8 @@ const App: React.FC = () => {
           </div>
         )}
 
-        {/* Main Content Area */}
         {jobs.length > 0 && (
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
-            
-            {/* Left: Job List */}
             <div className="lg:col-span-2 space-y-4">
               <div className="flex items-center justify-between mb-2">
                 <h2 className="text-lg font-semibold text-slate-800 flex items-center gap-2">
@@ -568,7 +602,7 @@ const App: React.FC = () => {
                     key={job.id} 
                     job={job} 
                     onRemove={handleRemoveJob} 
-                    onPreview={setPreviewHtml}
+                    onPreview={() => handleOpenPreview(job.id)}
                     onCrop={handleStartCrop}
                     onRetry={handleRetryJob}
                   />
@@ -576,10 +610,8 @@ const App: React.FC = () => {
               </div>
             </div>
 
-            {/* Right: Actions & Stats */}
             <div className="lg:col-span-1">
               <div className="sticky top-24 space-y-6">
-                
                 {/* Header Settings Section */}
                 <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-4 transition-all">
                     <div className="flex items-center justify-between pb-2 border-b border-slate-100 mb-3">
@@ -587,8 +619,6 @@ const App: React.FC = () => {
                             <FileType className="w-4 h-4 text-brand-600" />
                             Header Configuration
                         </h3>
-                        
-                        {/* Toggle Switch */}
                         <label className="relative inline-flex items-center cursor-pointer" title="Enable/Disable Header">
                             <input 
                                 type="checkbox" 
@@ -602,7 +632,6 @@ const App: React.FC = () => {
                     
                     {headerConfig.enabled ? (
                         <div className="space-y-3 mt-3 animate-in slide-in-from-top-1 duration-200 fade-in">
-                            {/* Font Selection */}
                             <div className="bg-slate-50 p-2 rounded border border-slate-200 mb-2">
                             <label className="block text-xs font-bold text-slate-700 mb-1 flex items-center gap-1">
                                 <Type className="w-3 h-3" /> Font Style
@@ -619,7 +648,7 @@ const App: React.FC = () => {
                             </div>
 
                             <div>
-                                <label className="block text-xs font-semibold text-slate-500 mb-1">Logo Text (Top Right)</label>
+                                <label className="block text-xs font-semibold text-slate-500 mb-1">Logo Text</label>
                                 <input 
                                     type="text" 
                                     value={headerConfig.logoText}
@@ -679,7 +708,7 @@ const App: React.FC = () => {
                             </div>
 
                             <div className="pt-2 border-t border-slate-100">
-                                <label className="block text-xs font-semibold text-slate-500 mb-1">Instruction 1 (Bold)</label>
+                                <label className="block text-xs font-semibold text-slate-500 mb-1">Instruction 1</label>
                                 <input 
                                     type="text" 
                                     value={headerConfig.instruction1}
@@ -745,6 +774,15 @@ const App: React.FC = () => {
                       )}
                     </button>
 
+                    <button
+                      onClick={handleOpenGlobalPreview}
+                      disabled={completedCount === 0}
+                      className="w-full flex items-center justify-center gap-2 bg-teal-600 text-white py-3 px-4 rounded-lg font-medium hover:bg-teal-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                    >
+                        <Eye className="w-5 h-5" />
+                        Preview Full Document
+                    </button>
+
                     <div className="grid grid-cols-3 gap-2">
                       <button
                         onClick={handleDownloadAll}
@@ -779,7 +817,7 @@ const App: React.FC = () => {
                     <div className="flex items-start gap-3">
                       <AlertTriangle className="w-5 h-5 text-amber-500 flex-shrink-0 mt-0.5" />
                       <p className="text-xs text-slate-500 leading-relaxed">
-                        <strong>Tip:</strong> Word download uses inline styles. For perfect layout, use the Printable HTML or PDF option.
+                        <strong>Tip:</strong> Click "Preview Full Document" to see and edit the final output (Header + All Pages) before downloading.
                       </p>
                     </div>
                   </div>
@@ -798,7 +836,6 @@ const App: React.FC = () => {
         )}
       </main>
 
-      {/* Footer with Visitor Counter */}
       <footer className="py-6 border-t border-slate-200 bg-white mt-auto">
         <div className="max-w-5xl mx-auto px-4 flex flex-col sm:flex-row items-center justify-between text-slate-500 text-sm gap-4">
           <p>© {new Date().getFullYear()} prakash. All rights reserved.</p>
@@ -811,7 +848,6 @@ const App: React.FC = () => {
         </div>
       </footer>
 
-      {/* Hidden File Input */}
       <input
         type="file"
         ref={fileInputRef}
@@ -821,11 +857,16 @@ const App: React.FC = () => {
         accept="image/png, image/jpeg, image/webp, image/bmp"
       />
 
-      {/* Preview Modal */}
-      {previewHtml && (
+      {/* Preview/Editor Modal */}
+      {previewJobId && previewContent && (
         <PreviewModal 
-          html={previewHtml} 
-          onClose={() => setPreviewHtml(null)} 
+          html={previewContent} 
+          jobId={previewJobId}
+          onClose={() => {
+            setPreviewJobId(null);
+            setPreviewContent(null);
+          }} 
+          onSave={handleUpdateJobHtml}
         />
       )}
 

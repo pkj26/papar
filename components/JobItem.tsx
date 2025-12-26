@@ -1,6 +1,6 @@
 import React from 'react';
 import { ImageJob, JobStatus } from '../types';
-import { Loader2, CheckCircle, AlertCircle, Eye, Trash2, Crop, RefreshCw } from 'lucide-react';
+import { Loader2, CheckCircle, AlertCircle, Eye, Trash2, Crop, RefreshCw, Pencil } from 'lucide-react';
 
 interface JobItemProps {
   job: ImageJob;
@@ -95,7 +95,7 @@ export const JobItem: React.FC<JobItemProps> = ({ job, onRemove, onPreview, onCr
           <button
             onClick={() => onPreview(job.resultHtml!)}
             className="p-2 text-slate-500 hover:text-blue-600 hover:bg-blue-50 rounded-full transition-colors"
-            title="Preview HTML"
+            title="Preview & Edit"
           >
             <Eye className="w-5 h-5" />
           </button>
