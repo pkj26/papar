@@ -1,5 +1,6 @@
 import React, { useState, useCallback, useRef, useEffect } from 'react';
 import { Upload, Printer, Download, Sparkles, AlertTriangle, ClipboardPaste, Users, FileText, Shuffle, FileType, Trash2, Type, Eye, BrainCircuit, FileCheck } from 'lucide-react';
+import { Analytics } from '@vercel/analytics/react';
 import { ImageJob, JobStatus } from './types';
 import { generateHtmlFromImage, remixHtmlContent, generateSolutionFromHtml, fileToGenerativePart } from './services/geminiService';
 import { JobItem } from './components/JobItem';
@@ -1002,6 +1003,8 @@ const App: React.FC = () => {
           onSave={handleCropSave}
         />
       )}
+
+      <Analytics />
     </div>
   );
 };
