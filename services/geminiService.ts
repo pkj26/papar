@@ -1,82 +1,75 @@
-import { GoogleGenAI } from "@google/genai";
+import { GoogleGenAI, Type } from "@google/genai";
+// @ts-ignore
+import mammoth from 'mammoth';
+// @ts-ignore
+import * as pdfjsLibProxy from 'pdfjs-dist';
+
+// Handle ESM/CJS default export inconsistency for pdfjs-dist
+// @ts-ignore
+const pdfjsLib = pdfjsLibProxy.default || pdfjsLibProxy;
+
+// Configure PDF Worker - Use cdnjs for stable access to the worker script
+if (pdfjsLib.GlobalWorkerOptions) {
+  pdfjsLib.GlobalWorkerOptions.workerSrc = `https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js`;
+}
+
+// --- CONFIGURATION ---
+const BATCH_SIZE = 1; // Process 1 page at a time to ensure NO data is missing or truncated
+const MAX_CONCURRENT_REQUESTS = 3; // Keep 3 parallel workers for speed
+
+export interface ExtractionProgress {
+    totalPages: number;
+    processedPages: number;
+    entriesFound: number;
+    status: string;
+}
 
 const SYSTEM_PROMPT = `
-You are an expert Frontend Engineer and UI Designer.
-Your task is to convert an image of a document or web page into a PIXEL-PERFECT HTML/Tailwind CSS replica.
+You are an expert Frontend Engineer.
+Task: Convert the provided image/PDF inputs into a SINGLE, seamless HTML string using Tailwind CSS.
 
-**Instructions:**
-1. **Analyze**: Look at the layout, typography, colors, and spacing of the image.
-2. **Replicate**: Create an HTML structure that looks EXACTLY like the image.
-   - Use **Tailwind CSS** for the main styling.
-   - **CRITICAL FOR WORD COMPATIBILITY**: You MUST ALSO use **inline \`style="..."\` attributes** for critical layout properties (width, background-color, font-size, borders, padding). 
-     - *Reason*: The user will export this to MS Word, which ignores Tailwind classes. Inline styles ensure the design stays intact in Word.
-   - Match fonts (use standard web safe fonts like Arial, Times New Roman, Roboto).
-   - If there are tables, recreate them using HTML <table> with inline borders.
-3. **Content**: Extract all text accurately.
-4. **Images**: If there are sub-images, use a placeholder or ignore, focus on Text and Layout.
-5. **Watermark Removal (CRITICAL)**: 
-   - **IGNORE** any watermarks, stamps, or overlay text (e.g., "Sample", "Copyright", "Confidential", Website URLs, or diagonal text) that obscures the content.
-   - **DO NOT** transcribe the watermark text into the HTML.
-   - **DO NOT** create visual elements (like faded divs) for the watermark. 
-   - Pretend the watermark does not exist and reconstruct the text/tables underneath it cleanly.
+**CRITICAL RULES:**
+1. **COMPLETE CONVERSION**: You must convert **EVERY PAGE** and **EVERY QUESTION** in the input files. Do not skip any content.
+2. **CONTINUOUS SCROLL**: Stitch all pages together into one continuous vertical layout. Remove page breaks.
+3. **STYLING**: Use Tailwind CSS. Make it look like a clean, professional exam paper.
+   - Use <div class="p-6 max-w-4xl mx-auto bg-white shadow-lg my-4"> for the main container.
+4. **ACCURACY**: Extract text and tables exactly as they appear.
+5. **IMAGES**: If there are diagrams, describe them in text [Diagram: description] if you cannot generate them, or use placeholder SVGs if simple.
 
-**Output Rules:**
-* Return ONLY the HTML code for the content container.
-* Do NOT include <html>, <head>, or <body> tags.
-* Do NOT use markdown code blocks.
-* Ensure the code is responsive but optimized for print and MS Word export.
+**Output:**
+- Return ONLY the HTML code.
+- No markdown formatting.
+- If the input is long, ensure you generate the FULL output.
 `;
 
 const REMIX_PROMPT = `
-You are an expert Exam Setter and Teacher.
-I will provide you with HTML code representing an exam paper or worksheet.
-Your task is to **CREATE A NEW VERSION** of this test paper by changing the questions, while keeping the **EXACT SAME LAYOUT AND STYLING**.
-
-**Instructions:**
-1. **Analyze Context**: Identify the subject (Math, Science, History, etc.) and the topic of the questions.
-2. **Modify Questions**:
-   - **Mathematics/Physics**: Change the numbers/values in the problems. Keep the logic and formula required the same. (e.g., if 2x + 4 = 10, change to 3x + 6 = 15).
-   - **Theory (History/Bio/English)**: Replace the question with a DIFFERENT valid question from the SAME TOPIC/CHAPTER. (e.g., If asking about Newton's 1st Law, ask about Newton's 2nd Law or an example of the 1st Law).
-   - **Multiple Choice**: Change the question and the options. Ensure there is still one correct answer.
-3. **Preserve Structure**:
-   - **DO NOT CHANGE** the HTML structure, classes, or inline styles. The visual look must be identical.
-   - **DO NOT CHANGE** static headers like "School Name", "Time Allowed", "Instructions", "Student Name", "Roll No". Only change the actual content of the questions.
-4. **Clean Up**: If any watermark text accidentally remained in the source HTML, remove it in this version.
-
-**Output Rules:**
-* Return ONLY the HTML code.
-* Do NOT include markdown formatting.
+You are an expert Exam Setter.
+Task: Rewrite the provided exam questions with different values but same logic.
+Output: Valid HTML only.
 `;
 
 const SOLUTION_PROMPT = `
-You are an expert Professor and Tutor.
-I will provide you with HTML code containing exam questions.
-Your task is to generate a **Professional Solution Key** for these questions suitable for printing.
+You are a Super-Intelligent Professor.
+Task: Generate detailed, step-by-step solutions for **EVERY SINGLE QUESTION** identified in the provided HTML.
 
-**Instructions:**
-1. **Parse**: Read the questions from the provided HTML. **Ignore any text that looks like a watermark or artifact.**
-2. **Format**: For EACH question found, create a distinct "Solution Block".
-   - **Container**: Wrap the Question-Answer pair in a <div class="solution-block" style="margin-bottom: 25px; page-break-inside: avoid; border-bottom: 1px dashed #e5e7eb; padding-bottom: 20px;">.
-   - **Question Section**: 
-     - Use a light gray background box for the question text so it stands out.
-     - Style: <div style="background-color: #f3f4f6; padding: 12px; border-radius: 6px; font-weight: bold; color: #111827; margin-bottom: 12px; font-size: 16px; border-left: 4px solid #4b5563;">Q: [Insert Question Text]</div>
-   - **Answer Section**: 
-     - Provide a clear, detailed step-by-step solution.
-     - Style: <div style="padding-left: 8px; color: #374151; line-height: 1.6; font-size: 15px;">[Insert Detailed Solution]</div>
-   - **Math**: If it is a math problem, show steps clearly using standard text representation or simple HTML.
-   - **Code**: If it asks for code, use a <pre> block with a border.
+**STRICT PROCESS:**
+1. **IDENTIFY**: Scan the HTML and identify Question 1, Question 2, Question 3, etc.
+2. **SOLVE ALL**: You MUST generate a solution for **ALL** identified questions.
+   - If there are 5 questions, I expect 5 solution blocks.
+   - **DO NOT STOP** after Q1.
+   - **DO NOT** write "Repeat for other questions".
+3. **FORMATTING**:
+   - Wrap each solution in: <div class="solution-item mb-8 p-6 border-b border-gray-200">
+   - Title: <h3 class="text-xl font-bold text-blue-800 mb-4 bg-blue-50 inline-block px-3 py-1 rounded">Solution for Q[#]</h3>
+   - Body: <div class="text-gray-800 text-lg leading-relaxed font-handwriting"> (Use a handwriting-like font family if available)
 
-**Output Rules:**
-* Return ONLY the HTML code for the solution body.
-* Do NOT return markdown.
-* Use inline styles for maximum compatibility with PDF generators.
-* Do not include the main header (Subject, Time, etc), just the list of questions and answers.
+**Output:**
+- Return ONLY the HTML string of the solutions.
+- Ensure the output is complete.
 `;
 
 /**
- * Resizes and compresses an image file to reduce payload size and speed up API processing.
- * Max dimension: 1536px (enough for A4 clarity)
- * Quality: 0.7 JPEG
+ * Resizes and compresses an image file.
  */
 const optimizeImage = (file: File): Promise<{ mimeType: string; data: string }> => {
   return new Promise((resolve, reject) => {
@@ -87,9 +80,8 @@ const optimizeImage = (file: File): Promise<{ mimeType: string; data: string }> 
         const canvas = document.createElement('canvas');
         let width = img.width;
         let height = img.height;
-        const MAX_DIM = 1536; // Optimized for speed while maintaining text legibility
+        const MAX_DIM = 1536; 
 
-        // Calculate new dimensions
         if (width > MAX_DIM || height > MAX_DIM) {
           if (width > height) {
             height = Math.round((height * MAX_DIM) / width);
@@ -108,14 +100,12 @@ const optimizeImage = (file: File): Promise<{ mimeType: string; data: string }> 
           return;
         }
 
-        // Draw with white background (handles transparent PNGs converting to JPEG)
         ctx.fillStyle = '#FFFFFF';
         ctx.fillRect(0, 0, width, height);
         ctx.drawImage(img, 0, 0, width, height);
 
-        // Convert to JPEG with compression
         const mimeType = 'image/jpeg';
-        const quality = 0.7; // 70% quality is sufficient for OCR/Layout and much faster
+        const quality = 0.7; 
         const dataUrl = canvas.toDataURL(mimeType, quality);
         const data = dataUrl.split(',')[1];
         
@@ -129,180 +119,362 @@ const optimizeImage = (file: File): Promise<{ mimeType: string; data: string }> 
   });
 };
 
-export const fileToGenerativePart = async (file: File): Promise<{ mimeType: string; data: string }> => {
-  // Always optimize/compress the image regardless of type.
-  // This standardizes inputs to JPEG and reduces size significantly.
-  try {
-    return await optimizeImage(file);
-  } catch (error) {
-    console.warn("Image optimization failed, falling back to original file", error);
-    
-    // Fallback to original method if canvas fails
+export const fileToGenerativePart = async (file: File): Promise<any> => {
+  if (file.type === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document') {
     return new Promise((resolve, reject) => {
-      const reader = new FileReader();
-      reader.onloadend = () => {
-        const base64String = reader.result as string;
-        const matches = base64String.match(/^data:([^;]+);base64,/);
-        let mimeType = matches ? matches[1] : file.type;
-        if (!mimeType || mimeType === 'application/octet-stream') {
-          mimeType = 'image/png';
-        }
-        const base64Data = base64String.split(',')[1];
-        resolve({ mimeType, data: base64Data });
-      };
-      reader.onerror = (err) => reject(new Error("Failed to read file: " + err));
-      reader.readAsDataURL(file);
-    });
-  }
-};
-
-const getApiKey = (): string => {
-  const isValid = (key: any) => typeof key === 'string' && key.length > 0;
-
-  if (typeof process !== 'undefined' && process.env) {
-    if (isValid(process.env.API_KEY)) return process.env.API_KEY!;
-    if (isValid(process.env.VITE_API_KEY)) return process.env.VITE_API_KEY!;
-    if (isValid(process.env.REACT_APP_API_KEY)) return process.env.REACT_APP_API_KEY!;
-    if (isValid(process.env.NEXT_PUBLIC_API_KEY)) return process.env.NEXT_PUBLIC_API_KEY!;
-  }
-
-  try {
-    // @ts-ignore
-    if (typeof import.meta !== 'undefined' && import.meta.env) {
-      // @ts-ignore
-      if (isValid(import.meta.env.API_KEY)) return import.meta.env.API_KEY;
-      // @ts-ignore
-      if (isValid(import.meta.env.VITE_API_KEY)) return import.meta.env.VITE_API_KEY;
-      // @ts-ignore
-      if (isValid(import.meta.env.NEXT_PUBLIC_API_KEY)) return import.meta.env.NEXT_PUBLIC_API_KEY;
-    }
-  } catch (e) {}
-  
-  throw new Error("API Key Missing. In Vercel Settings, try naming your variable 'VITE_API_KEY' (or 'REACT_APP_API_KEY') and then REDEPLOY the project.");
-};
-
-export const generateHtmlFromImage = async (file: File): Promise<string> => {
-  let apiKey: string;
-  try {
-    apiKey = getApiKey();
-  } catch (e: any) {
-    throw new Error(e.message);
-  }
-
-  const ai = new GoogleGenAI({ apiKey });
-  
-  try {
-    const { mimeType, data } = await fileToGenerativePart(file);
-
-    const response = await ai.models.generateContent({
-      model: 'gemini-3-flash-preview', 
-      contents: {
-        role: 'user',
-        parts: [
-          {
-            inlineData: {
-              mimeType: mimeType,
-              data: data
+        const reader = new FileReader();
+        reader.onload = async (e) => {
+            try {
+                const arrayBuffer = e.target?.result as ArrayBuffer;
+                const result = await mammoth.convertToHtml({ arrayBuffer });
+                resolve({ 
+                    text: `[CONTENT FROM WORD DOCUMENT "${file.name}":]\n${result.value}` 
+                });
+            } catch (err) {
+                console.error("Mammoth conversion failed", err);
+                reject(new Error("Failed to read Word document."));
             }
-          },
-          {
-            text: "Create a pixel-perfect HTML/Tailwind replica of this image."
-          }
-        ]
-      },
-      config: {
-        systemInstruction: SYSTEM_PROMPT,
-        temperature: 0.1,
+        };
+        reader.onerror = reject;
+        reader.readAsArrayBuffer(file);
+    });
+  }
+
+  if (file.type === 'application/pdf') {
+     return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onloadend = () => {
+            const base64String = reader.result as string;
+            const base64Data = base64String.split(',')[1];
+            resolve({
+                inlineData: {
+                    mimeType: 'application/pdf',
+                    data: base64Data
+                }
+            });
+        };
+        reader.onerror = reject;
+        reader.readAsDataURL(file);
+     });
+  }
+
+  if (file.type.startsWith('image/')) {
+      try {
+        const { mimeType, data } = await optimizeImage(file);
+        return {
+            inlineData: { mimeType, data }
+        };
+      } catch (error) {
+        console.warn("Image optimization failed, falling back to original file", error);
+        return new Promise((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onloadend = () => {
+                const base64String = reader.result as string;
+                let mimeType = file.type || 'image/png';
+                const base64Data = base64String.split(',')[1];
+                resolve({ inlineData: { mimeType, data: base64Data } });
+            };
+            reader.onerror = reject;
+            reader.readAsDataURL(file);
+        });
       }
+  }
+
+  throw new Error(`Unsupported file type: ${file.type}`);
+};
+
+/**
+ * Helper: Retry mechanism for API calls
+ */
+async function withRetry<T>(fn: () => Promise<T>, retries = 3, delay = 2000): Promise<T> {
+  try {
+    return await fn();
+  } catch (error: any) {
+    if (retries > 0 && (error.message?.includes('429') || error.message?.includes('503'))) {
+      console.warn(`API Busy. Retrying in ${delay}ms... (${retries} left)`);
+      await new Promise(res => setTimeout(res, delay));
+      return withRetry(fn, retries - 1, delay * 2);
+    }
+    throw error;
+  }
+}
+
+export const generateHtmlFromImages = async (files: File[]): Promise<string> => {
+  const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+  
+  try {
+    const contentParts = await Promise.all(files.map(f => fileToGenerativePart(f)));
+    
+    contentParts.push({
+        text: "Merge these inputs into ONE continuous HTML document. Do not skip any text or questions."
     });
 
-    let text = response.text || "";
-    text = text.replace(/```html/g, '').replace(/```/g, '').trim();
-    
-    return text;
+    return await withRetry(async () => {
+        const response = await ai.models.generateContent({
+          model: 'gemini-3-flash-preview', 
+          contents: {
+            parts: contentParts
+          },
+          config: {
+            systemInstruction: SYSTEM_PROMPT,
+            temperature: 0.1,
+          }
+        });
+        let text = response.text || "";
+        text = text.replace(/```html/g, '').replace(/```/g, '').trim();
+        return text;
+    });
+
   } catch (error: any) {
     console.error("Gemini API Error:", error);
     const message = error.message || String(error);
-    if (message.includes("API key") || message.includes("403")) {
-      throw new Error("Invalid API Key. Please check your Vercel Environment Variables.");
-    }
-    if (message.includes("429")) {
-        throw new Error("Too many requests (429). Please Retry.");
-    }
+    if (message.includes("API key")) throw new Error("Invalid API Key.");
+    if (message.includes("429")) throw new Error("Too many requests (429). Please wait and retry.");
     throw new Error(message);
   }
 };
 
 export const remixHtmlContent = async (html: string): Promise<string> => {
-  let apiKey: string;
-  try {
-    apiKey = getApiKey();
-  } catch (e: any) {
-    throw new Error(e.message);
-  }
-
-  const ai = new GoogleGenAI({ apiKey });
+  const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
 
   try {
-    const response = await ai.models.generateContent({
-      model: 'gemini-3-flash-preview',
-      contents: {
-        role: 'user',
-        parts: [{ text: `Here is the HTML code:\n\n${html}` }]
-      },
-      config: {
-        systemInstruction: REMIX_PROMPT,
-        temperature: 0.7, // Higher temperature for creativity in new questions
-      }
+    return await withRetry(async () => {
+        const response = await ai.models.generateContent({
+          model: 'gemini-3-flash-preview',
+          contents: `Here is the HTML code:\n\n${html}`,
+          config: {
+            systemInstruction: REMIX_PROMPT,
+            temperature: 0.7,
+          }
+        });
+
+        let text = response.text || "";
+        text = text.replace(/```html/g, '').replace(/```/g, '').trim();
+        return text;
     });
-
-    let text = response.text || "";
-    text = text.replace(/```html/g, '').replace(/```/g, '').trim();
-
-    return text;
   } catch (error: any) {
-    console.error("Gemini API Error (Remix):", error);
-    const message = error.message || String(error);
-    if (message.includes("429")) {
-        throw new Error("Too many requests (429). Please wait a moment and retry.");
-    }
-    throw new Error(message);
+    throw new Error(error.message || String(error));
   }
 };
 
 export const generateSolutionFromHtml = async (html: string): Promise<string> => {
-  let apiKey: string;
-  try {
-    apiKey = getApiKey();
-  } catch (e: any) {
-    throw new Error(e.message);
-  }
-
-  const ai = new GoogleGenAI({ apiKey });
+  const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
 
   try {
-    const response = await ai.models.generateContent({
-      model: 'gemini-3-flash-preview',
-      contents: {
-        role: 'user',
-        parts: [{ text: `Here is the questions HTML:\n\n${html}` }]
-      },
-      config: {
-        systemInstruction: SOLUTION_PROMPT,
-        temperature: 0.4, // Balanced for factual accuracy and good explanation
-      }
+    return await withRetry(async () => {
+        const response = await ai.models.generateContent({
+          model: 'gemini-3-pro-preview',
+          contents: `Here is the full HTML content of the exam paper:\n\n${html}\n\nTASK: Generate detailed solutions for EVERY question found in the HTML above.`,
+          config: {
+            systemInstruction: SOLUTION_PROMPT,
+            temperature: 0.2, 
+            maxOutputTokens: 8192, 
+            thinkingConfig: { thinkingBudget: 1024 } 
+          }
+        });
+
+        let text = response.text || "";
+        text = text.replace(/```html/g, '').replace(/```/g, '').trim();
+        return text;
     });
-
-    let text = response.text || "";
-    text = text.replace(/```html/g, '').replace(/```/g, '').trim();
-
-    return text;
   } catch (error: any) {
     console.error("Gemini API Error (Solution):", error);
-    const message = error.message || String(error);
-    if (message.includes("429")) {
-        throw new Error("Too many requests (429). Please wait a moment and retry.");
-    }
-    throw new Error(message);
+    throw new Error(error.message || String(error));
   }
+};
+
+// Helper to convert PDF file to array of Base64 Images (Page by Page)
+const convertPdfPagesToImages = async (file: File, onProgress?: (pages: number) => void): Promise<string[]> => {
+    const arrayBuffer = await file.arrayBuffer();
+    // Use the safely resolved pdfjsLib instance
+    const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+    const numPages = pdf.numPages;
+    const images: string[] = [];
+
+    // Limit resolution for speed and token usage (Flash supports text in images well at lower res)
+    const SCALE = 2.0; // Increased scale slightly for better Punjabi text recognition
+
+    for (let i = 1; i <= numPages; i++) {
+        const page = await pdf.getPage(i);
+        const viewport = page.getViewport({ scale: SCALE }); 
+        const canvas = document.createElement('canvas');
+        const context = canvas.getContext('2d');
+        canvas.height = viewport.height;
+        canvas.width = viewport.width;
+
+        await page.render({ canvasContext: context!, viewport: viewport }).promise;
+        const dataUrl = canvas.toDataURL('image/jpeg', 0.8);
+        images.push(dataUrl.split(',')[1]); // Keep only base64 data
+        if (onProgress) onProgress(i);
+    }
+    return images;
+};
+
+// --- NEW VOTER EXTRACTION LOGIC (GEMINI BATCH) ---
+
+// Helper for concurrency
+async function runConcurrent<T, R>(
+  items: T[], 
+  concurrency: number, 
+  fn: (item: T) => Promise<R>
+): Promise<R[]> {
+  const results: R[] = [];
+  const queue = [...items];
+  
+  async function worker() {
+    while (queue.length > 0) {
+      const item = queue.shift();
+      if (item) {
+        try {
+          const result = await fn(item);
+          results.push(result);
+        } catch (e) {
+          console.error("Batch Error", e);
+        }
+      }
+    }
+  }
+
+  const workers = Array(Math.min(items.length, concurrency)).fill(null).map(() => worker());
+  await Promise.all(workers);
+  return results;
+}
+
+export const extractVoterData = async (
+  file: File, 
+  onProgress: (stats: ExtractionProgress) => void
+): Promise<any[]> => {
+  const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+
+  // 1. Convert PDF to Images
+  onProgress({ totalPages: 0, processedPages: 0, entriesFound: 0, status: "Converting PDF to Images..." });
+  
+  let images: string[] = [];
+  try {
+     if (file.type === 'application/pdf') {
+         images = await convertPdfPagesToImages(file, (count) => {
+            onProgress({ totalPages: 0, processedPages: count, entriesFound: 0, status: `Converted ${count} pages...` });
+         });
+     } else {
+         const { data } = await optimizeImage(file);
+         images = [data];
+     }
+  } catch (e) {
+      throw new Error("Failed to read file. Please ensure it is a valid PDF.");
+  }
+
+  // --- LOGIC TO SKIP FIRST 2 PAGES (Start from Page 3) ---
+  const totalOriginalPages = images.length;
+  // If PDF has more than 2 pages, assume standard Voter List structure and skip cover.
+  let pagesToProcess = images;
+  if (file.type === 'application/pdf' && images.length > 2) {
+      pagesToProcess = images.slice(2); 
+      onProgress({ 
+          totalPages: pagesToProcess.length, 
+          processedPages: 0, 
+          entriesFound: 0, 
+          status: `Skipped cover pages. Processing ${pagesToProcess.length} pages...` 
+      });
+  }
+
+  const totalPages = pagesToProcess.length;
+
+  // 2. Batch Images
+  const batches: string[][] = [];
+  for (let i = 0; i < pagesToProcess.length; i += BATCH_SIZE) {
+    batches.push(pagesToProcess.slice(i, i + BATCH_SIZE));
+  }
+
+  let processedCount = 0;
+  let allEntries: any[] = [];
+
+  // 3. Process Batches concurrently
+  await runConcurrent(batches, MAX_CONCURRENT_REQUESTS, async (batchImages) => {
+     // Prepare parts: Text Prompt + Images
+     const parts: any[] = [];
+     
+     batchImages.forEach(base64 => {
+         parts.push({ inlineData: { mimeType: 'image/jpeg', data: base64 } });
+     });
+
+     parts.push({ text: `
+        Analyze this Punjabi Voter List page. Extract ALL voter entries found.
+        Ignore text 'ਫੋਟੋ ਉਪਲਬਧ ਹੈ' (Photo Available).
+
+        **DELETED VOTER LOGIC:**
+        Check every voter card for a 'DELETED' stamp, 'DELETED' text across the face, or a cross mark.
+        If a voter is deleted, strictly set the 'VoterID' field to "DELETED" and keep other fields if visible, or empty if obliterated.
+
+        **FIELDS TO EXTRACT (JSON keys must be exact):**
+        1. SerialNo: The simple number at the top/corner (e.g., 7).
+        2. VoterID: The alphanumeric ID (e.g., IFC1629609).
+        3. NamePunjabi: Text after 'ਨਾਮ'.
+        4. NameEnglish: Transliterate the Punjabi Name to English if not present.
+        5. RelationNamePunjabi: Text after 'ਪਿਤਾ' (Father), 'ਮਾਤਾ' (Mother), or 'ਪਤੀ' (Husband).
+        6. RelationNameEnglish: Transliterate Relation Name to English.
+        7. RelationType: 'Father', 'Mother', or 'Husband'.
+        8. HouseNo: Text after 'ਮਕਾਨ ਨੰ.'
+        9. Age: Text after 'ਉਮਰ'.
+        10. Gender: Text after 'ਲਿੰਗ' (Translate: ਪੁਰਸ਼->Male, ਇਸਤਰੀ->Female).
+
+        Return a strictly valid JSON ARRAY of objects.
+     ` });
+
+     try {
+         // ADDED RETRY LOGIC HERE
+         await withRetry(async () => {
+             const result = await ai.models.generateContent({
+                 model: 'gemini-3-flash-preview',
+                 contents: { parts },
+                 config: {
+                     responseMimeType: "application/json",
+                     responseSchema: {
+                        type: Type.ARRAY,
+                        items: {
+                            type: Type.OBJECT,
+                            properties: {
+                                SerialNo: { type: Type.STRING },
+                                VoterID: { type: Type.STRING },
+                                NamePunjabi: { type: Type.STRING },
+                                NameEnglish: { type: Type.STRING },
+                                RelationNamePunjabi: { type: Type.STRING },
+                                RelationNameEnglish: { type: Type.STRING },
+                                RelationType: { type: Type.STRING },
+                                HouseNo: { type: Type.STRING },
+                                Age: { type: Type.STRING },
+                                Gender: { type: Type.STRING },
+                            }
+                        }
+                     }
+                 }
+             });
+
+             const text = result.text;
+             if (text) {
+                 const data = JSON.parse(text);
+                 if (Array.isArray(data)) {
+                     allEntries.push(...data);
+                 }
+             }
+         }, 3, 2000); // 3 retries, start with 2s delay
+
+     } catch (e) {
+         console.error("Gemini Batch Failed after retries", e);
+     } finally {
+         processedCount += batchImages.length;
+         onProgress({ 
+             totalPages, 
+             processedPages: processedCount, 
+             entriesFound: allEntries.length,
+             status: `Analyzing... (${Math.round((processedCount/totalPages)*100)}%)` 
+         });
+     }
+  });
+
+  // Sort by Serial Number numerically
+  return allEntries.sort((a, b) => {
+      const numA = parseInt(a.SerialNo) || 0;
+      const numB = parseInt(b.SerialNo) || 0;
+      return numA - numB;
+  });
 };

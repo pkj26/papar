@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { X, Save, AlignLeft, AlignCenter, AlignRight, Check, AlertCircle, Bold, Italic, Underline, Type } from 'lucide-react';
+import { X, Save, AlignLeft, AlignCenter, AlignRight, Check, AlertCircle, Bold, Italic, Underline, Type, ArrowDownToLine, Scissors } from 'lucide-react';
 
 interface PreviewModalProps {
   html: string;
@@ -32,13 +32,14 @@ export const PreviewModal: React.FC<PreviewModalProps> = ({ html, jobId, onClose
   // Local state for margins in mm
   const [margins, setMargins] = useState({ top: 10, right: 10, bottom: 10, left: 10 });
   const contentRef = useRef<HTMLDivElement>(null);
+  const containerRef = useRef<HTMLDivElement>(null);
   const [isSaving, setIsSaving] = useState(false);
+  const [fitStatus, setFitStatus] = useState<string>("");
 
   // Initialize the editable div with the HTML
   useEffect(() => {
     if (contentRef.current) {
         contentRef.current.innerHTML = html;
-        // Enable CSS styling for execCommand
         document.execCommand('styleWithCSS', false, 'true');
     }
   }, []);
@@ -47,12 +48,9 @@ export const PreviewModal: React.FC<PreviewModalProps> = ({ html, jobId, onClose
     setIsSaving(true);
     if (contentRef.current) {
         const editedContent = contentRef.current.innerHTML;
-        
         // Wrap the content in a div that applies the margins as inline styles
         const wrapperStyle = `padding: ${margins.top}mm ${margins.right}mm ${margins.bottom}mm ${margins.left}mm; width: 100%; box-sizing: border-box;`;
-        
         const finalHtml = `<div style="${wrapperStyle}">${editedContent}</div>`;
-        
         onSave(jobId, finalHtml);
     }
     setTimeout(() => setIsSaving(false), 500);
@@ -60,6 +58,43 @@ export const PreviewModal: React.FC<PreviewModalProps> = ({ html, jobId, onClose
 
   const executeCommand = (command: string, value?: string) => {
     document.execCommand(command, false, value);
+  };
+
+  const insertPageBreak = () => {
+    const breakHtml = `<div style="page-break-after: always; height: 1px; border-bottom: 2px dashed #ccc; margin: 20px 0; position: relative;" title="Page Break"></div>`;
+    document.execCommand('insertHTML', false, breakHtml);
+  };
+
+  const handleAutoFit = () => {
+    if (!containerRef.current || !contentRef.current) return;
+    
+    setFitStatus("Fitting...");
+    
+    // A4 height in pixels approx 1122px at 96dpi (297mm). 
+    // We want to fit into roughly 1 page height minus margins.
+    const A4_HEIGHT_PX = 1050; // Safety buffer
+    
+    // Reset font size to start fresh or continue? Let's just scale down current.
+    let currentScale = 100; // percent
+    let iterations = 0;
+    
+    const attemptFit = () => {
+        if (!contentRef.current) return;
+        const height = contentRef.current.scrollHeight;
+        
+        if (height > A4_HEIGHT_PX && iterations < 20) {
+            // Reduce font size of everything
+            currentScale -= 5;
+            contentRef.current.style.fontSize = `${currentScale}%`;
+            iterations++;
+            requestAnimationFrame(attemptFit);
+        } else {
+            setFitStatus(iterations > 0 ? `Shrunk to ${currentScale}%` : "Already fits!");
+            setTimeout(() => setFitStatus(""), 2000);
+        }
+    };
+    
+    attemptFit();
   };
 
   return (
@@ -93,12 +128,9 @@ export const PreviewModal: React.FC<PreviewModalProps> = ({ html, jobId, onClose
             {/* Editing Controls */}
             <div className="flex items-center gap-6 p-2 px-4 bg-white text-sm overflow-x-auto">
                 
-                {/* Typography */}
+                {/* Font/Type */}
                 <div className="flex items-center gap-2 border-r border-slate-200 pr-4">
-                    <span className="text-xs font-semibold text-slate-400 mr-1 uppercase tracking-wider flex items-center gap-1">
-                        <Type className="w-3 h-3" /> Font
-                    </span>
-                    
+                    <Type className="w-4 h-4 text-slate-400" />
                     <select 
                         onChange={(e) => executeCommand('fontName', e.target.value)}
                         className="h-8 text-xs border border-slate-300 rounded px-1 w-28 outline-none focus:border-brand-500 bg-white"
@@ -117,86 +149,76 @@ export const PreviewModal: React.FC<PreviewModalProps> = ({ html, jobId, onClose
                     </select>
 
                     <div className="flex bg-slate-100 rounded p-0.5 border border-slate-200 ml-1">
-                        <button onClick={() => executeCommand('bold')} className="p-1 hover:bg-white hover:shadow-sm rounded transition-all" title="Bold"><Bold className="w-3.5 h-3.5" /></button>
-                        <button onClick={() => executeCommand('italic')} className="p-1 hover:bg-white hover:shadow-sm rounded transition-all" title="Italic"><Italic className="w-3.5 h-3.5" /></button>
-                        <button onClick={() => executeCommand('underline')} className="p-1 hover:bg-white hover:shadow-sm rounded transition-all" title="Underline"><Underline className="w-3.5 h-3.5" /></button>
+                        <button onClick={() => executeCommand('bold')} className="p-1 hover:bg-white hover:shadow-sm rounded transition-all"><Bold className="w-3.5 h-3.5" /></button>
+                        <button onClick={() => executeCommand('italic')} className="p-1 hover:bg-white hover:shadow-sm rounded transition-all"><Italic className="w-3.5 h-3.5" /></button>
+                        <button onClick={() => executeCommand('underline')} className="p-1 hover:bg-white hover:shadow-sm rounded transition-all"><Underline className="w-3.5 h-3.5" /></button>
                     </div>
                 </div>
 
                 {/* Alignment */}
                 <div className="flex items-center gap-1 border-r border-slate-200 pr-4">
-                    <span className="text-xs font-semibold text-slate-400 mr-1 uppercase tracking-wider">Align</span>
-                    <button onClick={() => executeCommand('justifyLeft')} className="p-1.5 hover:bg-slate-100 rounded" title="Align Left"><AlignLeft className="w-4 h-4" /></button>
-                    <button onClick={() => executeCommand('justifyCenter')} className="p-1.5 hover:bg-slate-100 rounded" title="Align Center"><AlignCenter className="w-4 h-4" /></button>
-                    <button onClick={() => executeCommand('justifyRight')} className="p-1.5 hover:bg-slate-100 rounded" title="Align Right"><AlignRight className="w-4 h-4" /></button>
+                    <button onClick={() => executeCommand('justifyLeft')} className="p-1.5 hover:bg-slate-100 rounded" title="Left"><AlignLeft className="w-4 h-4" /></button>
+                    <button onClick={() => executeCommand('justifyCenter')} className="p-1.5 hover:bg-slate-100 rounded" title="Center"><AlignCenter className="w-4 h-4" /></button>
+                    <button onClick={() => executeCommand('justifyRight')} className="p-1.5 hover:bg-slate-100 rounded" title="Right"><AlignRight className="w-4 h-4" /></button>
+                </div>
+
+                {/* Page Controls */}
+                <div className="flex items-center gap-3 border-r border-slate-200 pr-4">
+                    <button 
+                        onClick={handleAutoFit}
+                        className="flex items-center gap-1 text-xs font-semibold text-blue-600 bg-blue-50 px-2 py-1 rounded hover:bg-blue-100"
+                        title="Shrink font size until it fits 1 page"
+                    >
+                        <ArrowDownToLine className="w-3 h-3" />
+                        {fitStatus || "Auto Fit"}
+                    </button>
+
+                    <button 
+                        onClick={insertPageBreak}
+                        className="flex items-center gap-1 text-xs font-semibold text-purple-600 bg-purple-50 px-2 py-1 rounded hover:bg-purple-100"
+                        title="Insert Page Break at cursor"
+                    >
+                        <Scissors className="w-3 h-3" />
+                        Page Break
+                    </button>
                 </div>
 
                 {/* Margins */}
-                <div className="flex items-center gap-4 flex-shrink-0">
-                    <span className="text-xs font-semibold text-slate-400 mr-1 uppercase tracking-wider">Margins (mm)</span>
-                    
-                    <div className="flex items-center gap-2">
-                        <label className="text-xs text-slate-600">L</label>
-                        <input 
-                            type="range" min="0" max="50" value={margins.left} 
-                            onChange={(e) => setMargins(prev => ({ ...prev, left: Number(e.target.value) }))}
-                            className="w-12 h-1 bg-slate-200 rounded-lg appearance-none cursor-pointer"
-                            title={`Left: ${margins.left}mm`}
-                        />
-                    </div>
-
-                    <div className="flex items-center gap-2">
-                        <label className="text-xs text-slate-600">R</label>
-                        <input 
-                            type="range" min="0" max="50" value={margins.right} 
-                            onChange={(e) => setMargins(prev => ({ ...prev, right: Number(e.target.value) }))}
-                            className="w-12 h-1 bg-slate-200 rounded-lg appearance-none cursor-pointer"
-                            title={`Right: ${margins.right}mm`}
-                        />
-                    </div>
-
-                    <div className="flex items-center gap-2">
-                        <label className="text-xs text-slate-600">T</label>
-                        <input 
-                            type="range" min="0" max="50" value={margins.top} 
-                            onChange={(e) => setMargins(prev => ({ ...prev, top: Number(e.target.value) }))}
-                            className="w-12 h-1 bg-slate-200 rounded-lg appearance-none cursor-pointer"
-                            title={`Top: ${margins.top}mm`}
-                        />
-                    </div>
-
-                    <div className="flex items-center gap-2">
-                        <label className="text-xs text-slate-600">B</label>
-                        <input 
-                            type="range" min="0" max="50" value={margins.bottom} 
-                            onChange={(e) => setMargins(prev => ({ ...prev, bottom: Number(e.target.value) }))}
-                            className="w-12 h-1 bg-slate-200 rounded-lg appearance-none cursor-pointer"
-                            title={`Bottom: ${margins.bottom}mm`}
-                        />
-                    </div>
+                <div className="flex items-center gap-2 flex-shrink-0">
+                    <span className="text-xs font-semibold text-slate-400 mr-1 uppercase">Margins</span>
+                    {['Top', 'Right', 'Bottom', 'Left'].map((side, i) => (
+                        <div key={side} className="flex items-center gap-1">
+                            <span className="text-[10px] text-slate-500">{side[0]}</span>
+                            <input 
+                                type="number" min="0" max="50" 
+                                value={Object.values(margins)[i]} 
+                                onChange={(e) => setMargins(prev => ({ ...prev, [side.toLowerCase()]: Number(e.target.value) }))}
+                                className="w-8 h-6 text-xs border rounded px-1 text-center"
+                            />
+                        </div>
+                    ))}
                 </div>
-            </div>
-            
-            <div className="px-4 py-1 bg-yellow-50 text-yellow-700 text-xs flex items-center gap-2 border-b border-yellow-100">
-                <AlertCircle className="w-3 h-3" />
-                <span>Select text to change font/size. Click anywhere to type or fix spacing. <strong>Changes are saved on 'Save Changes'</strong>.</span>
             </div>
         </div>
         
         {/* Editor Area */}
-        <div className="flex-1 bg-slate-200 p-8 overflow-auto flex justify-center">
+        <div className="flex-1 bg-slate-200 p-8 overflow-auto flex justify-center relative">
            <div 
-             className="bg-white shadow-xl min-h-[297mm] origin-top outline-none"
+             ref={containerRef}
+             className="bg-white shadow-xl min-h-[297mm] origin-top outline-none relative"
              style={{
                width: '210mm',
-               // Dynamic Padding based on controls
                paddingTop: `${margins.top}mm`,
                paddingRight: `${margins.right}mm`,
                paddingBottom: `${margins.bottom}mm`,
                paddingLeft: `${margins.left}mm`,
              }}
            >
-               {/* Content Editable Div */}
+               {/* Visual Page Guide Marker (A4 end) */}
+               <div className="absolute top-[297mm] left-0 right-0 border-b-2 border-red-300 border-dashed pointer-events-none z-10 opacity-50">
+                    <span className="absolute right-2 -top-5 text-xs text-red-400 bg-white px-1">End of Page 1</span>
+               </div>
+               
                <div 
                   ref={contentRef}
                   contentEditable

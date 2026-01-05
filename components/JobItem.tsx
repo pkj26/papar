@@ -1,16 +1,17 @@
 import React from 'react';
 import { ImageJob, JobStatus } from '../types';
-import { Loader2, CheckCircle, AlertCircle, Eye, Trash2, Crop, RefreshCw, Pencil } from 'lucide-react';
+import { Loader2, CheckCircle, AlertCircle, Eye, Trash2, Crop, RefreshCw, FileSignature } from 'lucide-react';
 
 interface JobItemProps {
   job: ImageJob;
   onRemove: (id: string) => void;
   onPreview: (html: string) => void;
+  onSolutionPreview: () => void;
   onCrop: (id: string) => void;
   onRetry: (id: string) => void;
 }
 
-export const JobItem: React.FC<JobItemProps> = ({ job, onRemove, onPreview, onCrop, onRetry }) => {
+export const JobItem: React.FC<JobItemProps> = ({ job, onRemove, onPreview, onSolutionPreview, onCrop, onRetry }) => {
   return (
     <div className={`flex items-center p-4 bg-white border rounded-lg shadow-sm hover:shadow-md transition-all group ${job.status === JobStatus.ERROR ? 'border-red-200 bg-red-50/30' : 'border-slate-200'}`}>
       {/* Thumbnail */}
@@ -91,15 +92,32 @@ export const JobItem: React.FC<JobItemProps> = ({ job, onRemove, onPreview, onCr
           </button>
         )}
         
-        {job.status === JobStatus.COMPLETED && job.resultHtml && (
-          <button
-            onClick={() => onPreview(job.resultHtml!)}
-            className="p-2 text-slate-500 hover:text-blue-600 hover:bg-blue-50 rounded-full transition-colors"
-            title="Preview & Edit"
-          >
-            <Eye className="w-5 h-5" />
-          </button>
+        {job.status === JobStatus.COMPLETED && (
+          <>
+            {/* View/Edit Original HTML */}
+            {job.resultHtml && (
+              <button
+                onClick={() => onPreview(job.resultHtml!)}
+                className="p-2 text-slate-500 hover:text-blue-600 hover:bg-blue-50 rounded-full transition-colors"
+                title="Preview & Edit Question HTML"
+              >
+                <Eye className="w-5 h-5" />
+              </button>
+            )}
+
+            {/* View/Edit Solution HTML */}
+            {job.solutionHtml && (
+               <button
+                 onClick={onSolutionPreview}
+                 className="p-2 text-slate-500 hover:text-green-600 hover:bg-green-50 rounded-full transition-colors"
+                 title="Preview & Edit Solution HTML"
+               >
+                 <FileSignature className="w-5 h-5" />
+               </button>
+            )}
+          </>
         )}
+
         <button
           onClick={() => onRemove(job.id)}
           className="p-2 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded-full transition-colors"

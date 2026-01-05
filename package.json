@@ -13,7 +13,11 @@
     "react-dom": "18.3.1",
     "@google/genai": "^1.34.0",
     "lucide-react": "0.292.0",
-    "react-image-crop": "11.0.0"
+    "react-image-crop": "11.0.0",
+    "mammoth": "1.6.0",
+    "xlsx": "latest",
+    "pdfjs-dist": "3.11.174",
+    "tesseract.js": "5.0.5"
   },
   "devDependencies": {
     "@types/node": "^22.14.0",
