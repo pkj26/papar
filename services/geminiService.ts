@@ -156,9 +156,20 @@ async function generateWithRetry(
     const maxRetries = 10; 
     let attempts = 0;
 
-    // USE YOUR SINGLE PANEL KEY
-    const apiKey = process.env.API_KEY;
-    if (!apiKey) throw new Error("API Key is missing from environment variables.");
+    // 1. Try process.env (Node/Webpack)
+    let apiKey = process.env.API_KEY;
+
+    // 2. Try Vite/Next.js specific env vars if process.env failed
+    if (!apiKey) {
+        try {
+            // @ts-ignore
+            apiKey = import.meta.env?.VITE_API_KEY || import.meta.env?.NEXT_PUBLIC_API_KEY;
+        } catch(e) {
+            // Ignore error if import.meta is not available
+        }
+    }
+
+    if (!apiKey) throw new Error("API Key is missing. Please set API_KEY or VITE_API_KEY in your environment variables.");
 
     while (attempts < maxRetries) {
         try {
@@ -232,6 +243,10 @@ function repairJsonString(jsonString: string): string {
     }
 }
 
+function cleanMarkdownHtml(text: string): string {
+    return text.trim().replace(/^```html/, '').replace(/^```/, '').replace(/```$/, '');
+}
+
 /**
  * Smart Generator that attempts primary model then falls back to alias.
  */
@@ -246,9 +261,13 @@ async function generateContentWithFallback(
                  contents: { parts },
                  config: jsonMode ? { responseMimeType: "application/json" } : undefined
              });
-             let text = result.text || "{}";
-             if (jsonMode) text = repairJsonString(text);
-             return jsonMode ? JSON.parse(text) : text;
+             let text = result.text || "";
+             if (jsonMode) {
+                 text = repairJsonString(text);
+                 return JSON.parse(text);
+             } else {
+                 return cleanMarkdownHtml(text);
+             }
         });
     };
 
@@ -266,10 +285,81 @@ async function generateContentWithFallback(
     }
 }
 
-// --- STANDARD FUNCTIONS (HTML/SOLUTION) REMOVED FOR BREVITY (Kept imports) ---
-export const generateHtmlFromImages = async (files: File[]): Promise<string> => { return ""; };
-export const remixHtmlContent = async (html: string): Promise<string> => { return ""; };
-export const generateSolutionFromHtml = async (html: string): Promise<string> => { return ""; };
+// --- CORE GENERATION FUNCTIONS ---
+
+export const generateHtmlFromImages = async (files: File[]): Promise<string> => {
+    const parts: any[] = [];
+    for (const file of files) {
+        const part = await fileToGenerativePart(file);
+        parts.push(part);
+    }
+
+    parts.push({ text: `
+    Role: Expert Frontend Developer & UI Designer.
+    Task: Convert the provided images (Question Paper, Document, or Worksheet) into a PIXEL-PERFECT HTML page using Tailwind CSS.
+    
+    Strict Guidelines:
+    1. **Fidelity**: The output must look EXACTLY like the input image in terms of layout, spacing, alignment, and structure.
+    2. **Typography**: Match font weights (Bold/Italic) and relative sizes. Use standard sans-serif fonts.
+    3. **Content**: Extract ALL text, numbers, and tables accurately. Do not summarize.
+    4. **Styling**: 
+       - Use Tailwind CSS classes.
+       - Background should be white. 
+       - Text should be black/gray-900.
+       - Tables should have borders matching the original.
+    5. **Structure**: 
+       - Wrap the content in a <div class="p-6 bg-white"> container.
+       - Do NOT output <html>, <head>, or <body> tags. Just the internal component HTML.
+    
+    Output: Return ONLY the raw HTML string. Do not use Markdown code blocks.
+    `});
+
+    return await generateContentWithFallback(parts, false);
+};
+
+export const remixHtmlContent = async (html: string): Promise<string> => {
+    return await generateContentWithFallback([
+        { text: `
+        Task: Remix/Modify this Question Paper HTML while strictly preserving the HTML structure and Tailwind classes.
+        
+        Instructions:
+        1. Keep the same topics, difficulty, and format.
+        2. Change specific numerical values (e.g., "50kg" -> "75kg").
+        3. Change names of people/places (e.g., "Ram" -> "Arjun").
+        4. Shuffle the order of multiple-choice options (A, B, C, D) if present.
+        5. DO NOT change the CSS classes or layout structure.
+        
+        Input HTML:
+        ${html}
+        
+        Output: Return ONLY the modified raw HTML string.
+        ` }
+    ], false);
+};
+
+export const generateSolutionFromHtml = async (html: string): Promise<string> => {
+    return await generateContentWithFallback([
+        { text: `
+        Task: Generate a detailed, step-by-step Solution Sheet for the following Question Paper HTML.
+        
+        Instructions:
+        1. For each question found in the HTML, provide a clear solution.
+        2. Use a "Handwritten" aesthetic for the output:
+           - Use font-family: 'Kalam', cursive; (I will inject the font, just use the style).
+           - Text color: #1e3a8a (Dark Blue like a pen).
+        3. Format:
+           - **Question X**: [Brief recap of question]
+           - **Solution**: [Step-by-step calculation or reasoning]
+           - **Answer**: [Final Answer in Bold]
+        4. Styling: Use Tailwind CSS. Wrap each solution in a <div class="mb-6 p-4 border-b border-blue-100">.
+        
+        Input HTML:
+        ${html}
+        
+        Output: Return ONLY the raw HTML string for the solutions.
+        ` }
+    ], false);
+};
 
 // Helper to convert PDF file to array of Base64 Images (Page by Page)
 const convertPdfPagesToImages = async (file: File, onProgress?: (pages: number) => void): Promise<string[]> => {

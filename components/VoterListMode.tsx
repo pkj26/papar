@@ -56,7 +56,7 @@ export const VoterListMode: React.FC = () => {
 
   const handleUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files) {
-      const newFiles = Array.from(e.target.files);
+      const newFiles: File[] = Array.from(e.target.files);
       const newJobs: VoterJob[] = newFiles.map(f => {
           // Check for existing progress
           const savedInfo = loadProgressFromLocal(f.name);
