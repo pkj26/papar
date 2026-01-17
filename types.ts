@@ -33,6 +33,21 @@ export interface GenerationConfig {
 }
 
 export interface VoterData {
+  // Global Metadata (From Cover Page or Header)
+  District: string;
+  ACNo: string;
+  ACName: string;
+  PoliceStation: string;
+  PostOffice: string;
+  PollingStationName: string;
+  PollingStationAddress: string;
+  PartNo: string;
+
+  // Section Metadata (From Page Header)
+  SectionNo: string;
+  SectionName: string;
+
+  // Voter Details
   SerialNo: string;
   VoterID: string;
   NamePunjabi: string;
