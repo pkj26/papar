@@ -417,26 +417,43 @@ async function runConcurrent<T, R>(
 /**
  * STEP 1: Extract Cover Page Data
  */
-async function extractCoverData(imageBase64: string): Promise<any> {
+async function extractCoverData(imageBase64: string, mode: 'PUNJAB' | 'UP'): Promise<any> {
+    const punjabPrompt = `
+        Extract Electoral Roll Metadata from this page.
+        Look for keywords like: "District", "Zilla", "Assembly Constituency", "Vidhan Sabha Halqa", "Police Station", "Thana", "Polling Station", "Polling Area".
+        
+        Return JSON:
+        {
+           "District": "...",
+           "ACNo": "...",
+           "ACName": "...",
+           "PoliceStation": "...",
+           "PostOffice": "...",
+           "PollingStationName": "...",
+           "PollingStationAddress": "...",
+           "PartNo": "..."
+        }
+    `;
+
+    const upPrompt = `
+        Extract Metadata from this UP Teacher/Graduate Constituency Voter List Cover Page.
+        Extract top-level details like District Name, Division (Khand), Polling Station Name, Part Number.
+        
+        Look for "खंड" (Division) and "जिला" (District).
+        
+        Return JSON:
+        {
+           "District": "...",
+           "PartNo": "...",
+           "PollingStationName": "...",
+           "PollingStationAddress": "..."
+        }
+    `;
+
     return generateContentWithFallback(
         [
             { inlineData: { mimeType: 'image/jpeg', data: imageBase64 } },
-            { text: `
-                Extract Electoral Roll Metadata from this page.
-                Look for keywords like: "District", "Zilla", "Assembly Constituency", "Vidhan Sabha Halqa", "Police Station", "Thana", "Polling Station", "Polling Area".
-                
-                Return JSON:
-                {
-                   "District": "...",
-                   "ACNo": "...",
-                   "ACName": "...",
-                   "PoliceStation": "...",
-                   "PostOffice": "...",
-                   "PollingStationName": "...",
-                   "PollingStationAddress": "...",
-                   "PartNo": "..."
-                }
-            ` }
+            { text: mode === 'UP' ? upPrompt : punjabPrompt }
         ],
         true // JSON mode
     );
@@ -446,7 +463,8 @@ export const extractVoterData = async (
   file: File, 
   startPage: number, 
   onProgress: (stats: ExtractionProgress) => void,
-  onBatchComplete?: (newData: any[]) => void
+  onBatchComplete: (newData: any[]) => void,
+  mode: 'PUNJAB' | 'UP' = 'PUNJAB'
 ): Promise<any[]> => {
 
   // 1. Convert PDF to Images
@@ -473,12 +491,17 @@ export const extractVoterData = async (
   
   let voterPages: string[] = [];
 
-  if (file.type === 'application/pdf' && images.length >= 2) {
-      voterPages = images.slice(2); 
+  // Logic: First page or first 2 pages might be cover.
+  // For UP, sometimes only first page is cover.
+  // For Punjab, usually first 2.
+  const headerPagesCount = mode === 'UP' ? 1 : 2;
+
+  if (file.type === 'application/pdf' && images.length >= headerPagesCount) {
+      voterPages = images.slice(headerPagesCount); 
       try {
         onProgress({ totalPages: images.length, processedPages: 0, entriesFound: 0, status: "Analyzing Cover Page..." });
         // Extract cover data
-        let extractedCover = await extractCoverData(images[0]);
+        let extractedCover = await extractCoverData(images[0], mode);
         coverData = { ...coverData, ...extractedCover };
       } catch (e) {
           console.error("Cover page extraction failed.", e);
@@ -501,6 +524,55 @@ export const extractVoterData = async (
   let processedCount = startPage;
   let allEntries: any[] = [];
 
+  // --- PROMPTS ---
+  const punjabPrompt = `
+    Analyze this Punjabi Voter List page.
+    **TASK 1: HEADER**
+    Extract: District, ACNo, ACName, PoliceStation, PostOffice, PollingStationName, PollingStationAddress, PartNo, SectionNo, SectionName.
+    **TASK 2: VOTERS**
+    Extract ALL voter entries.
+    Fields: SerialNo, VoterID, NamePunjabi, NameEnglish, RelationNamePunjabi, RelationNameEnglish, RelationType, HouseNo, Age, Gender.
+    Return JSON Object with "header" and "voters" array.
+  `;
+
+  const upPrompt = `
+    Analyze this UP Teacher/Graduate Constituency Voter List page.
+    
+    **CRITICAL INSTRUCTION**: 
+    - The page contains a table with voter details.
+    - There are Headers at the top of the table on EVERY page (e.g. "क्रम संख्या", "निर्वाचक का नाम", "माता/पिता/पति का नाम"). **IGNORE THESE HEADERS.**
+    - ONLY extract the actual data rows.
+    - There are usually only 4 to 6 entries per page. finding 0 entries is suspicious unless it is a summary page.
+
+    **EXTRACTION RULES**:
+    1. **SerialNo**: Extract the number from Column 1.
+    2. **NameHindi**: Extract the name from Column 6 (Header: निर्वाचक का नाम). **Copy the Hindi text EXACTLY.**
+    3. **RelationTypeHindi**: Column 7 (संबंधी का प्रकार).
+    4. **RelationNameHindi**: Column 8 (संबंधी का नाम).
+    5. **AddressHindi**: Column 9 (पता).
+    6. **GenderHindi**: Column 10 (लिंग).
+    7. **DOB**: Column 11 (जन्म तिथि).
+    8. **InstitutionHistory**: Column 12 (Details of Institution).
+
+    Return a valid JSON object:
+    {
+      "voters": [
+        {
+          "SerialNo": "...",
+          "NameHindi": "...",
+          "RelationTypeHindi": "...",
+          "RelationNameHindi": "...",
+          "AddressHindi": "...",
+          "GenderHindi": "...",
+          "DOB": "...",
+          "InstitutionHistory": "..."
+        }
+      ]
+    }
+    
+    If no voters are found, return { "voters": [] }.
+  `;
+
   // Run batches with strictly 1 concurrent request
   await runConcurrent(batches, MAX_CONCURRENT_REQUESTS, async (batchImages) => {
      const parts: any[] = [];
@@ -508,18 +580,7 @@ export const extractVoterData = async (
          parts.push({ inlineData: { mimeType: 'image/jpeg', data: base64 } });
      });
 
-     parts.push({ text: `
-        Analyze this Punjabi Voter List page.
-        
-        **TASK 1: HEADER**
-        Extract: District, ACNo, ACName, PoliceStation, PostOffice, PollingStationName, PollingStationAddress, PartNo, SectionNo, SectionName.
-
-        **TASK 2: VOTERS**
-        Extract ALL voter entries.
-        Fields: SerialNo, VoterID, NamePunjabi, NameEnglish, RelationNamePunjabi, RelationNameEnglish, RelationType, HouseNo, Age, Gender.
-        
-        Return JSON Object with "header" and "voters" array.
-     ` });
+     parts.push({ text: mode === 'UP' ? upPrompt : punjabPrompt });
 
      try {
          // Using the fallback-aware generator

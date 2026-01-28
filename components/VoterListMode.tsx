@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { Upload, FileSpreadsheet, Play, Loader2, CheckCircle, AlertCircle, Trash2, FileText, Database, PauseCircle, RefreshCw, Zap, TrendingUp, Users, FileDigit, Save, FastForward } from 'lucide-react';
+import { Upload, FileSpreadsheet, Play, Loader2, CheckCircle, AlertCircle, Trash2, FileText, Database, PauseCircle, RefreshCw, Zap, TrendingUp, Users, FileDigit, Save, FastForward, MapPin } from 'lucide-react';
 import { JobStatus, VoterJob, VoterData } from '../types';
 import { extractVoterData, ExtractionProgress } from '../services/geminiService';
 // @ts-ignore
@@ -8,11 +8,13 @@ import * as XLSX from 'xlsx';
 interface SavedProgress {
     data: VoterData[];
     processedPages: number;
+    mode: 'PUNJAB' | 'UP';
 }
 
 export const VoterListMode: React.FC = () => {
   const [jobs, setJobs] = useState<VoterJob[]>([]);
   const [isProcessing, setIsProcessing] = useState(false);
+  const [currentMode, setCurrentMode] = useState<'PUNJAB' | 'UP'>('UP'); // Default to UP as per request, or let user switch
   
   // Live Stats State
   const [liveStats, setLiveStats] = useState<ExtractionProgress>({
@@ -36,7 +38,7 @@ export const VoterListMode: React.FC = () => {
   const saveProgressToLocal = (fileName: string, data: VoterData[], processedPages: number) => {
       try {
           const key = `voter_progress_${fileName.replace(/\s+/g, '_')}`;
-          const payload: SavedProgress = { data, processedPages };
+          const payload: SavedProgress = { data, processedPages, mode: currentMode };
           localStorage.setItem(key, JSON.stringify(payload));
       } catch (e) {
           console.warn("Local Storage Full", e);
@@ -63,19 +65,17 @@ export const VoterListMode: React.FC = () => {
           const hasSavedData = savedInfo && savedInfo.data.length > 0;
 
           if (hasSavedData) {
-              // Update local state map to know where to resume this file
               setResumeState(prev => ({ ...prev, [f.name]: savedInfo!.processedPages }));
+              // Auto-set mode if resuming
+              if (savedInfo.mode) setCurrentMode(savedInfo.mode);
           }
-
-          // If we have data, we show it as "Partial" or "Completed" depending on user action, 
-          // but visually we'll just show IDLE with a note if it's partial. 
-          // Actually, let's mark it as IDLE so they can hit Start/Resume.
           
           return {
             id: Math.random().toString(36).substring(7),
             file: f,
-            status: hasSavedData ? JobStatus.IDLE : JobStatus.IDLE,
+            status: JobStatus.IDLE,
             extractedData: savedInfo ? savedInfo.data : [],
+            mode: hasSavedData && savedInfo.mode ? savedInfo.mode : currentMode, // Bind job to mode
             error: hasSavedData ? `Resumable (${savedInfo!.data.length} records)` : undefined
           };
       });
@@ -88,19 +88,6 @@ export const VoterListMode: React.FC = () => {
     setJobs(prev => prev.map(j => j.id === id ? { ...j, status, extractedData: data || j.extractedData, error } : j));
   };
 
-  // Helper to safely append data to state without losing previous rows
-  const appendJobData = (id: string, newData: VoterData[], totalProcessedPages: number) => {
-      setJobs(prev => prev.map(j => {
-          if (j.id === id) {
-              const updatedData = [...j.extractedData, ...newData];
-              // Auto-save
-              saveProgressToLocal(j.file.name, updatedData, totalProcessedPages);
-              return { ...j, extractedData: updatedData };
-          }
-          return j;
-      }));
-  };
-
   const processNextJob = async () => {
     if (!isRunningRef.current) return;
     if (queueRef.current.length === 0) {
@@ -110,10 +97,9 @@ export const VoterListMode: React.FC = () => {
         return;
     }
     
-    const nextId = queueRef.current[0]; // Peek
+    const nextId = queueRef.current[0];
     if (!nextId) return;
 
-    // Check if already fully completed manually? No, we trust the status.
     const currentJob = jobsRef.current.find(j => j.id === nextId);
     if (!currentJob) {
         queueRef.current.shift();
@@ -122,19 +108,16 @@ export const VoterListMode: React.FC = () => {
     }
 
     if (currentJob.status === JobStatus.COMPLETED) {
-         // Skip completed jobs
          queueRef.current.shift();
          processNextJob();
          return;
     }
 
-    updateJobStatus(nextId, JobStatus.PROCESSING, undefined, undefined); // clear error
+    updateJobStatus(nextId, JobStatus.PROCESSING, undefined, undefined);
 
     try {
-        setLiveStats(prev => ({ ...prev, status: `Starting ${currentJob.file.name}...` }));
+        setLiveStats(prev => ({ ...prev, status: `Starting ${currentJob.file.name} (${currentJob.mode} Mode)...` }));
 
-        // Determine Start Page (Resume logic)
-        // We look at the current data length or stored page count
         const resumePageCount = resumeState[currentJob.file.name] || 0;
         
         if (resumePageCount > 0) {
@@ -142,88 +125,38 @@ export const VoterListMode: React.FC = () => {
              setLiveStats(prev => ({ ...prev, status: `Resuming from page ${resumePageCount}...` }));
         }
 
-        // We pass a callback to extractVoterData to get incremental updates
-        // Note: extractVoterData now returns ONLY the new data found in this session
-        const sessionData = await extractVoterData(
+        await extractVoterData(
             currentJob.file,
             resumePageCount,
             (progress) => {
                 setLiveStats(prev => ({
                     ...progress,
-                    entriesFound: currentJob.extractedData.length + progress.entriesFound // Total = Existing + New
+                    entriesFound: currentJob.extractedData.length + progress.entriesFound 
                 }));
             },
             (batchData) => {
-                // This runs every time a batch of pages is finished
-                // We need to calculate total pages processed so far for saving
-                // Note: batchData is just 1 page usually (or BATCH_SIZE). 
-                // We don't get exact page index here easily, but we can increment resumeState?
-                // Actually, extractVoterData manages the loop. We need to trust the final update.
-                // A better way: The 'progress' callback gives 'processedPages'.
-                // But progress callback doesn't have the data.
-                
-                // We'll update state. The 'processedPages' in liveStats comes from progress callback.
-                // We can use that for saving? No, react state update async issues.
-                
-                // Let's just append data. We will update the 'Resume Page Count' at the end of function or aggressively if we tracked it.
-                // For simplicity, we save with an estimated page count (current stored + batch size).
-                // Or better: We rely on the final save. 
-                // BUT user said "if stops in middle". 
-                // We need to update the saved Page Count incrementally.
-                
-                // HACK: We assume BATCH_SIZE = 1.
-                // We can't easily know absolute page number here without changing callback signature.
-                // Let's rely on the final save for exact page count, 
-                // AND try to save incrementally by just reading the current liveStats.processedPages (risky)
-                // Let's just append data for now.
-                
-                // We will rely on the fact that if they stop, they have the DATA. 
-                // To support resume, we need to know how many pages that data represents.
-                // Let's modify appendJobData to NOT save page count yet, or save a safe lower bound.
-                
-                // Actually, simpler: We only update the 'resumeState' (Saved Page Count) when we are sure.
-                // Let's just update the data.
                 setJobs(prev => prev.map(j => {
                     if (j.id === nextId) {
                         const updated = [...j.extractedData, ...batchData];
-                        // We don't update page count in storage here to avoid sync issues. 
-                        // We only save data. On reload, we might re-process some pages if we don't save page count.
-                        // That is acceptable for safety.
-                        saveProgressToLocal(j.file.name, updated, resumePageCount); // Keep old page count until finish? No that's bad.
+                        saveProgressToLocal(j.file.name, updated, resumePageCount); 
                         return { ...j, extractedData: updated };
                     }
                     return j;
                 }));
-            }
+            },
+            currentJob.mode // Pass the specific mode for this job
         );
 
-        // Update with final data and final page count
-        // Note: extractVoterData returns ALL sorted entries found in THIS session.
-        // We merge with existing.
-        
-        // Wait, extractVoterData returns `allEntries`.
-        // If we resumed, `allEntries` only contains the NEW entries.
-        // We need to append them to `currentJob.extractedData`.
-        
-        // However, `appendJobData` was already adding them incrementally!
-        // So `currentJob.extractedData` in state (via `setJobs`) is already growing.
-        // But `currentJob` variable here is stale closure.
-        
-        // We need to get the latest data from ref to save correctly.
         const finishedJob = jobsRef.current.find(j => j.id === nextId);
-        const finalTotalPages = liveStats.processedPages; // This is actually total pages processed in THIS session + resume start?
-        // extractVoterData's progress returns 'processedPages' which is relative to startPage?
-        // No, in my implementation it returns `startPage + batchImages.length`. So it is absolute index.
+        const finalTotalPages = liveStats.processedPages; 
         
         if (finishedJob) {
              updateJobStatus(nextId, JobStatus.COMPLETED, finishedJob.extractedData);
              saveProgressToLocal(currentJob.file.name, finishedJob.extractedData, finalTotalPages);
-             // Update resume state for next time (marks as fully done if we reached end)
              setResumeState(prev => ({ ...prev, [currentJob.file.name]: finalTotalPages }));
         }
 
     } catch (err: any) {
-        // If error, we still have partial data in state.
         updateJobStatus(nextId, JobStatus.ERROR, undefined, err.message);
     }
 
@@ -247,7 +180,6 @@ export const VoterListMode: React.FC = () => {
         return;
     }
 
-    // Reset errors on retry but KEEP DATA for resume
     setJobs(prev => prev.map(j => j.status === JobStatus.ERROR ? { ...j, status: JobStatus.IDLE, error: undefined } : j));
 
     queueRef.current = pendingIds;
@@ -270,41 +202,68 @@ export const VoterListMode: React.FC = () => {
         return;
     }
 
-    const formattedData = allData.map(item => ({
-        "District": item.District || "",
-        "AC Number": item.ACNo || "",
-        "AC Name": item.ACName || "",
-        "Police Station": item.PoliceStation || "",
-        "Post Office": item.PostOffice || "",
-        "Polling Station Name": item.PollingStationName || "",
-        "Polling Station Address": item.PollingStationAddress || "",
-        "Part No": item.PartNo || "",
-        "Section No": item.SectionNo || "",
-        "Section Name": item.SectionName || "",
-        "Serial No": item.SerialNo,
-        "Voter ID": item.VoterID,
-        "Name (PUNJABI)": item.NamePunjabi,
-        "Name (English)": item.NameEnglish,
-        "Father/Husband Name (Punjabi)": item.RelationNamePunjabi,
-        "Father/Husband Name (English)": item.RelationNameEnglish,
-        "House No": item.HouseNo,
-        "Age": item.Age,
-        "Gender": item.Gender
-    }));
+    // We might have mixed data, but usually users process one type at a time.
+    // Let's check the mode of the first job to decide the export format.
+    const mode = jobs[0]?.mode || 'UP';
+
+    let formattedData: any[] = [];
+    let wscols: any[] = [];
+
+    if (mode === 'PUNJAB') {
+        formattedData = allData.map(item => ({
+            "District": item.District || "",
+            "AC Number": item.ACNo || "",
+            "AC Name": item.ACName || "",
+            "Police Station": item.PoliceStation || "",
+            "Post Office": item.PostOffice || "",
+            "Polling Station Name": item.PollingStationName || "",
+            "Polling Station Address": item.PollingStationAddress || "",
+            "Part No": item.PartNo || "",
+            "Section No": item.SectionNo || "",
+            "Section Name": item.SectionName || "",
+            "Serial No": item.SerialNo,
+            "Voter ID": item.VoterID,
+            "Name (PUNJABI)": item.NamePunjabi,
+            "Name (English)": item.NameEnglish,
+            "Father/Husband Name (Punjabi)": item.RelationNamePunjabi,
+            "Father/Husband Name (English)": item.RelationNameEnglish,
+            "House No": item.HouseNo,
+            "Age": item.Age,
+            "Gender": item.Gender
+        }));
+        wscols = [
+            { wch: 15 }, { wch: 8 }, { wch: 20 }, { wch: 20 }, { wch: 20 }, 
+            { wch: 25 }, { wch: 25 }, { wch: 8 }, { wch: 8 }, { wch: 20 }, 
+            { wch: 8 }, { wch: 15 }, { wch: 20 }, { wch: 20 }, { wch: 25 }, 
+            { wch: 25 }, { wch: 8 }, { wch: 6 }, { wch: 8 }
+        ];
+    } else {
+        // UP MODE EXPORT
+        formattedData = allData.map(item => ({
+            "District": item.District || "",
+            "Part No": item.PartNo || "",
+            "Polling Station": item.PollingStationName || "",
+            "Serial No": item.SerialNo, // Col 1
+            "Name": item.NameHindi, // Col 6
+            "Relation Type": item.RelationTypeHindi, // Col 7
+            "Relation Name": item.RelationNameHindi, // Col 8
+            "Address": item.AddressHindi, // Col 9
+            "Gender": item.GenderHindi, // Col 10
+            "DOB": item.DOB, // Col 11
+            "Institute History": item.InstitutionHistory // Col 12
+        }));
+        wscols = [
+            { wch: 15 }, { wch: 8 }, { wch: 25 }, { wch: 8 }, { wch: 25 }, 
+            { wch: 15 }, { wch: 25 }, { wch: 40 }, { wch: 10 }, { wch: 12 }, { wch: 30 }
+        ];
+    }
 
     const ws = XLSX.utils.json_to_sheet(formattedData);
-    
-    const wscols = [
-        { wch: 15 }, { wch: 8 }, { wch: 20 }, { wch: 20 }, { wch: 20 }, 
-        { wch: 25 }, { wch: 25 }, { wch: 8 }, { wch: 8 }, { wch: 20 }, 
-        { wch: 8 }, { wch: 15 }, { wch: 20 }, { wch: 20 }, { wch: 25 }, 
-        { wch: 25 }, { wch: 8 }, { wch: 6 }, { wch: 8 }
-    ];
     ws['!cols'] = wscols;
 
     const wb = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(wb, ws, "Voter List");
-    XLSX.writeFile(wb, "VoterList_Master.xlsx");
+    XLSX.utils.book_append_sheet(wb, ws, `Voter List (${mode})`);
+    XLSX.writeFile(wb, `VoterList_${mode}_Master.xlsx`);
   };
 
   const removeJob = (index: number) => {
@@ -314,7 +273,6 @@ export const VoterListMode: React.FC = () => {
 
     queueRef.current = queueRef.current.filter(id => id !== jobToRemove.id);
     setJobs(prev => prev.filter((_, i) => i !== index));
-    // Also remove from resume state
     setResumeState(prev => {
         const next = { ...prev };
         delete next[jobToRemove.file.name];
@@ -343,19 +301,35 @@ export const VoterListMode: React.FC = () => {
           <div>
             <h2 className="text-xl font-bold text-slate-800 flex items-center gap-2">
               <Database className="w-6 h-6 text-indigo-600" />
-              Voter List Extractor <span className="text-xs bg-purple-100 text-purple-800 px-2 py-0.5 rounded-full flex items-center gap-1 border border-purple-200"><Zap className="w-3 h-3 fill-purple-500 text-purple-500" /> AI Turbo V2</span>
+              Voter List Extractor <span className="text-xs bg-purple-100 text-purple-800 px-2 py-0.5 rounded-full flex items-center gap-1 border border-purple-200"><Zap className="w-3 h-3 fill-purple-500 text-purple-500" /> AI Turbo V3</span>
             </h2>
             <p className="text-slate-500 text-sm mt-1">
-              Supports Resume (Auto-Save). Checks every page for metadata.
+              Supports Resume (Auto-Save). High accuracy for Hindi names.
             </p>
           </div>
 
           <div className="flex flex-wrap items-center gap-3">
+            {/* Mode Selector */}
+            <div className="flex bg-slate-100 p-1 rounded-lg border border-slate-200">
+                <button 
+                    onClick={() => setCurrentMode('UP')}
+                    className={`px-3 py-1.5 text-xs font-bold rounded-md transition-all ${currentMode === 'UP' ? 'bg-white text-indigo-600 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}
+                >
+                    UP / Teacher
+                </button>
+                <button 
+                    onClick={() => setCurrentMode('PUNJAB')}
+                    className={`px-3 py-1.5 text-xs font-bold rounded-md transition-all ${currentMode === 'PUNJAB' ? 'bg-white text-indigo-600 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}
+                >
+                    Punjab
+                </button>
+            </div>
+
             <button 
               onClick={() => fileInputRef.current?.click()}
               className="flex items-center gap-2 px-4 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg font-medium transition-colors"
             >
-              <Upload className="w-4 h-4" /> Upload PDFs
+              <Upload className="w-4 h-4" /> Upload
             </button>
             <input type="file" ref={fileInputRef} onChange={handleUpload} multiple className="hidden" accept="application/pdf" />
 
@@ -366,7 +340,7 @@ export const VoterListMode: React.FC = () => {
                 className="flex items-center gap-2 px-6 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg font-medium transition-colors shadow-lg shadow-indigo-200 disabled:opacity-50"
                 >
                 <Play className="w-4 h-4" /> 
-                {jobs.some(j => (resumeState[j.file.name] || 0) > 0) ? 'Resume / Start' : 'Start Processing'}
+                {jobs.some(j => (resumeState[j.file.name] || 0) > 0) ? 'Resume' : 'Start'}
                 </button>
             ) : (
                 <button 
@@ -382,7 +356,7 @@ export const VoterListMode: React.FC = () => {
               disabled={totalRecords === 0}
               className="flex items-center gap-2 px-4 py-2 bg-green-600 hover:bg-green-700 text-white rounded-lg font-medium transition-colors shadow-lg shadow-green-200 disabled:opacity-50 disabled:cursor-not-allowed"
             >
-              <FileSpreadsheet className="w-4 h-4" /> Export Excel
+              <FileSpreadsheet className="w-4 h-4" /> Excel
             </button>
           </div>
         </div>
@@ -429,6 +403,18 @@ export const VoterListMode: React.FC = () => {
                     </p>
                 </div>
             </div>
+            
+            <div className="bg-slate-50 border border-slate-100 p-4 rounded-lg flex items-center gap-3">
+                <div className="p-2 bg-purple-100 text-purple-600 rounded-lg">
+                    <MapPin className="w-6 h-6" />
+                </div>
+                <div>
+                    <p className="text-xs text-slate-500 font-semibold uppercase">Mode</p>
+                    <p className="text-lg font-bold text-slate-800">
+                        {jobs.length > 0 && jobs[0].mode ? jobs[0].mode : currentMode}
+                    </p>
+                </div>
+            </div>
         </div>
 
       </div>
@@ -455,6 +441,7 @@ export const VoterListMode: React.FC = () => {
                     <div key={job.id} className={`grid grid-cols-12 p-3 text-sm items-center border-b border-slate-100 transition-colors ${job.status === JobStatus.PROCESSING ? 'bg-indigo-50/30' : 'hover:bg-slate-50'}`}>
                         <div className="col-span-1 text-center text-slate-400">{idx + 1}</div>
                         <div className="col-span-6 font-medium text-slate-700 truncate pr-4" title={job.file.name}>
+                            <span className="mr-2 text-xs bg-slate-200 text-slate-600 px-1.5 py-0.5 rounded">{job.mode}</span>
                             {job.file.name}
                         </div>
                         <div className="col-span-3">

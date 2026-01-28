@@ -33,31 +33,38 @@ export interface GenerationConfig {
 }
 
 export interface VoterData {
-  // Global Metadata (From Cover Page or Header)
-  District: string;
-  ACNo: string;
-  ACName: string;
-  PoliceStation: string;
-  PostOffice: string;
-  PollingStationName: string;
-  PollingStationAddress: string;
-  PartNo: string;
+  // Global Metadata (Common)
+  District?: string;
+  ACNo?: string;
+  ACName?: string;
+  PoliceStation?: string;
+  PostOffice?: string;
+  PollingStationName?: string;
+  PollingStationAddress?: string;
+  PartNo?: string;
 
-  // Section Metadata (From Page Header)
-  SectionNo: string;
-  SectionName: string;
+  // Punjab Specific
+  SectionNo?: string;
+  SectionName?: string;
+  SerialNo?: string;
+  VoterID?: string;
+  NamePunjabi?: string;
+  NameEnglish?: string;
+  RelationNamePunjabi?: string;
+  RelationNameEnglish?: string;
+  RelationType?: string; // Father, Mother, Husband, Other
+  HouseNo?: string;
+  Age?: string;
+  Gender?: string;
 
-  // Voter Details
-  SerialNo: string;
-  VoterID: string;
-  NamePunjabi: string;
-  NameEnglish: string;
-  RelationNamePunjabi: string;
-  RelationNameEnglish: string;
-  RelationType: string; // Father, Mother, Husband, Other
-  HouseNo: string;
-  Age: string;
-  Gender: string;
+  // UP Specific (Hindi)
+  NameHindi?: string;          // 6 निर्वाचक का नाम
+  RelationTypeHindi?: string;  // 7 संबंधी का प्रकार
+  RelationNameHindi?: string;  // 8 संबंधी का नाम
+  AddressHindi?: string;       // 9 पता
+  GenderHindi?: string;        // 10 लिंग
+  DOB?: string;                // 11 जन्म तिथि
+  InstitutionHistory?: string; // 12 शिक्षण संस्थान विवरण
 }
 
 export interface VoterJob {
@@ -65,5 +72,6 @@ export interface VoterJob {
   file: File;
   status: JobStatus;
   extractedData: VoterData[];
+  mode: 'PUNJAB' | 'UP'; // Track which mode was used
   error?: string;
 }
